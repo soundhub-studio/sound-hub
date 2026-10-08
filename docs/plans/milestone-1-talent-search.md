@@ -185,7 +185,7 @@ integration-owner approval.
 
 ## M1.1 execution baseline
 
-[Issue #2](https://github.com/Measure-2wice/sound-hub/issues/2) is both Gate 1 and the first vertical
+[Issue #2](https://github.com/soundhub-studio/sound-hub/issues/2) is both Gate 1 and the first vertical
 slice. It owns the shared foundation required by later tickets; it is not a disposable minimal model
 that downstream streams are expected to redesign.
 

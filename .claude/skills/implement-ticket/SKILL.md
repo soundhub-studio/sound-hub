@@ -10,7 +10,7 @@ Implement GitHub issue #$ARGUMENTS.
 
 ## Live ticket
 
-!`gh issue view $ARGUMENTS --repo Measure-2wice/sound-hub`
+!`gh issue view $ARGUMENTS --repo soundhub-studio/sound-hub`
 
 The GitHub issue above is the authoritative work order.
 
