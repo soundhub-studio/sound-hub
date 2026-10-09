@@ -100,9 +100,17 @@ export interface SearchPageProps {
     result: TalentSearchResultV1,
     criteria: SubmittedCriteria,
   ) => void;
+  /**
+   * M2 (#87) Finding 7: when the SessionProvider is still
+   * resolving the initial `/api/auth/me` request, the result
+   * card disables its Send project request button so a fast
+   * click on a still-resolving session has no effect. The
+   * default title explains the loading state.
+   */
+  readonly sessionLoading?: boolean;
 }
 
-export function SearchPage({ onSendProjectRequest }: SearchPageProps = {}) {
+export function SearchPage({ onSendProjectRequest, sessionLoading = false }: SearchPageProps = {}) {
   const [query, setQuery] = useState("");
   const [filters, setFilters] = useState<RequiredFiltersValue>({
     primaryCategoryKey: "",
@@ -452,7 +460,7 @@ export function SearchPage({ onSendProjectRequest }: SearchPageProps = {}) {
                   key={result.seller.sellerId}
                   result={result}
                   onSendProjectRequest={
-                    onSendProjectRequest
+                    onSendProjectRequest && !sessionLoading
                       ? (r) =>
                           onSendProjectRequest(r, {
                             query: submittedCriteria?.query ?? "",
@@ -460,6 +468,8 @@ export function SearchPage({ onSendProjectRequest }: SearchPageProps = {}) {
                           })
                       : undefined
                   }
+                  disabled={sessionLoading}
+                  disabledTitle="Checking your sign-in status…"
                 />
               ))}
             </div>

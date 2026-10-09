@@ -348,15 +348,18 @@ function IntentPageInner() {
                 You have both capabilities
               </h1>
               <p className="text-base text-muted mb-8" data-testid="intent-summary">
-                Your Personal Workspace is set up for hiring and offering services. Return to the
-                dashboard to continue.
+                {validatedReturnTo !== null
+                  ? "Your Personal Workspace is set up for hiring and offering services. Continue to where you were."
+                  : "Your Personal Workspace is set up for hiring and offering services. Return to the dashboard to continue."}
               </p>
               <a
-                href="/dashboard"
+                href={validatedReturnTo ?? "/dashboard"}
                 className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] py-3 px-6 text-base font-medium text-white bg-aubergine hover:bg-aubergine-hover rounded focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-aubergine"
-                data-testid="intent-back-to-dashboard"
+                data-testid={
+                  validatedReturnTo !== null ? "intent-continue" : "intent-back-to-dashboard"
+                }
               >
-                Return to dashboard
+                {validatedReturnTo !== null ? "Continue" : "Return to dashboard"}
               </a>
             </>
           ) : (

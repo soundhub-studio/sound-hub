@@ -302,4 +302,43 @@ describe("ResultCard — M2 (#87) buyer-side action surface", () => {
       "Send project request (coral, primary) MUST render before View service details (neutral, secondary)",
     );
   });
+
+  test("Finding 7 — Send project request is disabled with the loading title when the disabled prop is set", () => {
+    const html = renderToStaticMarkup(
+      createElement(ResultCard, {
+        result: SAMPLE_RESULT,
+        onSendProjectRequest: () => undefined,
+        disabled: true,
+        disabledTitle: "Checking your sign-in status…",
+      }),
+    );
+    const buttonMatch = html.match(/<button[^>]*data-testid="result-send-project-request"[^>]*>/);
+    assert.ok(buttonMatch, "Send project request button must be present");
+    assert.ok(
+      / disabled(?=[\s>=])/.test(buttonMatch[0]),
+      "Send project request MUST be disabled when the disabled prop is set",
+    );
+    assert.match(
+      buttonMatch[0],
+      /title="Checking your sign-in status…"/,
+      "Send project request MUST use the loading title when the disabled prop carries a disabledTitle",
+    );
+  });
+
+  test("Finding 7 — Send project request is enabled when the disabled prop is false and the callback is provided", () => {
+    const html = renderToStaticMarkup(
+      createElement(ResultCard, {
+        result: SAMPLE_RESULT,
+        onSendProjectRequest: () => undefined,
+        disabled: false,
+      }),
+    );
+    const buttonMatch = html.match(/<button[^>]*data-testid="result-send-project-request"[^>]*>/);
+    assert.ok(buttonMatch, "Send project request button must be present");
+    assert.doesNotMatch(
+      buttonMatch[0],
+      / disabled(?=[\s>=])/,
+      "Send project request MUST NOT be disabled when the disabled prop is false and the callback is provided",
+    );
+  });
 });

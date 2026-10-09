@@ -24,6 +24,17 @@
 // `/workspace/intent?return=/matchmaker`; signed-in
 // Buyer-capable buyers go directly.
 //
+// The handler MUST wait for the SessionProvider's initial
+// `/api/auth/me` request to resolve before classifying the
+// visitor. The initial `user` value is `null` for both
+// anonymous AND authenticated visitors while `loading` is
+// true; classifying an authenticated buyer as anonymous
+// would send them through the login chain unnecessarily.
+// The action is therefore suppressed while the session is
+// loading; the result card disables its button when the
+// session is unresolved so the buyer does not see a click
+// that does nothing.
+//
 // localStorage write failures (private-browsing quota, full
 // storage) are caught at the page level and surfaced as an
 // inline recoverable error so the buyer is never sent to a
@@ -38,7 +49,15 @@ import { useRouter } from "next/navigation";
 import { Card } from "../components/ui/Card";
 
 export default function TalentPage() {
-  const { user } = useSession();
+  // M2 (#87) Finding 7: read `loading` from useSession so we do
+  // not misclassify a still-resolving authenticated buyer as
+  // anonymous. The SessionProvider's initial `/api/auth/me`
+  // request returns `user: null, loading: true` for both
+  // anonymous and authenticated visitors; the helper's three
+  // routing branches are all keyed off `user` so an in-flight
+  // resolution would push an authenticated buyer through the
+  // anonymous /login chain.
+  const { user, loading: sessionLoading } = useSession();
   const { actingWorkspaceId, actingWorkspace } = useActingWorkspace();
   const router = useRouter();
   // M2 (#87): localStorage write failures (private-browsing
@@ -67,6 +86,18 @@ export default function TalentPage() {
       )}
       <SearchPage
         onSendProjectRequest={(result, criteria) => {
+          // M2 (#87) Finding 7: do not classify the visitor
+          // while the SessionProvider is still resolving their
+          // `/api/auth/me` request. An authenticated buyer who
+          // clicks during the initial fetch would otherwise be
+          // misclassified as anonymous and pushed through the
+          // /login chain unnecessarily. The result card also
+          // disables its button via the `loading` flag below so
+          // a fast click on a still-resolving session has no
+          // effect at the click-handler layer either.
+          if (sessionLoading) {
+            return;
+          }
           try {
             navigateToMatchmakerFromTalent({
               result,
@@ -85,6 +116,7 @@ export default function TalentPage() {
             );
           }
         }}
+        sessionLoading={sessionLoading}
       />
     </>
   );

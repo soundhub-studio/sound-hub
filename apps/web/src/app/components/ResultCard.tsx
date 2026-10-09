@@ -61,6 +61,16 @@ export interface ResultCardProps {
    * undefined" below.
    */
   readonly onSendProjectRequest?: (result: TalentSearchResultV1) => void;
+  /**
+   * M2 (#87) Finding 7: when the SessionProvider is still
+   * resolving the initial `/api/auth/me` request, the result
+   * card disables its Send project request button so a fast
+   * click on a still-resolving session has no effect. The
+   * default title explains the loading state; the button is
+   * also `aria-disabled`.
+   */
+  readonly disabled?: boolean;
+  readonly disabledTitle?: string;
 }
 
 type OfferingDetailVariant = "lead" | "additional";
@@ -85,7 +95,12 @@ const OFFERING_DETAIL_STYLES: Record<
   },
 };
 
-export function ResultCard({ result, onSendProjectRequest }: ResultCardProps) {
+export function ResultCard({
+  result,
+  onSendProjectRequest,
+  disabled,
+  disabledTitle,
+}: ResultCardProps) {
   const {
     seller,
     bestMatchingOffering,
@@ -283,16 +298,18 @@ export function ResultCard({ result, onSendProjectRequest }: ResultCardProps) {
           <button
             type="button"
             onClick={() => {
-              if (onSendProjectRequest) {
+              if (onSendProjectRequest && !disabled) {
                 onSendProjectRequest(result);
               }
             }}
-            disabled={!onSendProjectRequest}
-            aria-disabled={!onSendProjectRequest}
+            disabled={!onSendProjectRequest || !!disabled}
+            aria-disabled={!onSendProjectRequest || !!disabled}
             title={
-              onSendProjectRequest
-                ? "Send a project request to this seller"
-                : "Sign in to send a project request"
+              disabled && disabledTitle
+                ? disabledTitle
+                : onSendProjectRequest
+                  ? "Send a project request to this seller"
+                  : "Sign in to send a project request"
             }
             className="inline-flex items-center justify-center min-h-[44px] px-4 py-2 rounded-md bg-coral text-white text-sm font-semibold hover:bg-coral-hover disabled:opacity-60 disabled:cursor-not-allowed transition-colors focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-coral"
             data-testid="result-send-project-request"
