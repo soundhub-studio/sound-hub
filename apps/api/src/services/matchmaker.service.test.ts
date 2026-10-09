@@ -20,7 +20,7 @@
 // adapter that returns malformed output (so the fallback path is
 // covered).
 
-import { test } from "node:test";
+import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import type {
   AiInterpretBriefInputV1,
@@ -28,6 +28,7 @@ import type {
   TalentSearchRequestV1,
   TalentSearchResponseV1,
   TalentSearchRequiredCriteriaV1,
+  TalentSearchPreferredCriteriaV1,
 } from "@soundhub/types";
 import {
   InMemoryAuthRepository,
@@ -38,6 +39,10 @@ import {
   WorkspaceAuthorizationService,
 } from "./workspace-authorization.service.js";
 import { MatchmakerService, MatchmakerError } from "./matchmaker.service.js";
+import {
+  mergePreferredCriteriaPerAxis,
+  mergeRequiredCriteriaPerAxis,
+} from "./matchmaker.service.js";
 import {
   AiUnavailableError,
   AiInvalidOutputError,
@@ -539,4 +544,88 @@ test("MatchmakerService maps managed-invalid-output + unusable-fallback to MATCH
     (err: unknown) => err instanceof MatchmakerError && err.code === "MATCHMAKER_INVALID_REQUEST",
   );
   assert.equal(search.calls.length, 0);
+});
+
+// M2 (#87) Finding 8 (5th review): per-axis merge for required
+// criteria. The buyer wins on the specific axes the buyer supplied
+// a value for; the AI's axes the buyer did NOT name are preserved.
+// The AI is never allowed to relax a buyer-supplied hard axis, but
+// the AI IS allowed to contribute axes the buyer did not name.
+describe("mergeRequiredCriteriaPerAxis (M2 #87 5th review Finding 1)", () => {
+  test("buyer-supplied primaryCategoryKeys wins; AI's other axes are preserved", () => {
+    const aiRequired: TalentSearchRequiredCriteriaV1 = {
+      primaryCategoryKeys: ["music-production"],
+      serviceModes: ["Remote"],
+      basedIn: { countryCode: "US" },
+    };
+    const buyerRequired: TalentSearchRequiredCriteriaV1 = {
+      primaryCategoryKeys: ["songwriting"],
+    };
+    const merged = mergeRequiredCriteriaPerAxis(aiRequired, buyerRequired);
+    assert.deepEqual(merged.primaryCategoryKeys, ["songwriting"]);
+    // AI's other axes are preserved (the buyer did NOT name them).
+    assert.deepEqual(merged.serviceModes, ["Remote"]);
+    assert.deepEqual(merged.basedIn, { countryCode: "US" });
+  });
+
+  test("buyer-supplied empty array on an axis is ignored (AI's value wins on that axis)", () => {
+    // An empty `primaryCategoryKeys` array is "buyer did not
+    // supply a value for this axis" — the AI's value wins on
+    // that axis. The schema validation rejects an empty
+    // primaryCategoryKeys anyway; the merge rule treats it as
+    // "absent" so the AI's interpretation survives.
+    const aiRequired: TalentSearchRequiredCriteriaV1 = {
+      primaryCategoryKeys: ["music-production"],
+    };
+    const buyerRequired: TalentSearchRequiredCriteriaV1 = {
+      primaryCategoryKeys: [],
+    };
+    const merged = mergeRequiredCriteriaPerAxis(aiRequired, buyerRequired);
+    assert.deepEqual(merged.primaryCategoryKeys, ["music-production"]);
+  });
+
+  test("buyer-supplied basedIn wins when non-empty; AI's basedIn is dropped", () => {
+    const aiRequired: TalentSearchRequiredCriteriaV1 = {
+      primaryCategoryKeys: ["music-production"],
+      basedIn: { countryCode: "US" },
+    };
+    const buyerRequired: TalentSearchRequiredCriteriaV1 = {
+      basedIn: { countryCode: "HT" },
+    };
+    const merged = mergeRequiredCriteriaPerAxis(aiRequired, buyerRequired);
+    // AI's primaryCategoryKeys survives (the buyer did not name it).
+    assert.deepEqual(merged.primaryCategoryKeys, ["music-production"]);
+    // The buyer's basedIn wins.
+    assert.deepEqual(merged.basedIn, { countryCode: "HT" });
+  });
+
+  test("buyer-supplied serviceModes wins; AI's primaryCategoryKeys + basedIn are preserved", () => {
+    const aiRequired: TalentSearchRequiredCriteriaV1 = {
+      primaryCategoryKeys: ["music-production"],
+      serviceModes: ["Remote"],
+      basedIn: { countryCode: "US", city: "Brooklyn" },
+    };
+    const buyerRequired: TalentSearchRequiredCriteriaV1 = {
+      serviceModes: ["InPerson"],
+    };
+    const merged = mergeRequiredCriteriaPerAxis(aiRequired, buyerRequired);
+    assert.deepEqual(merged.serviceModes, ["InPerson"]);
+    assert.deepEqual(merged.primaryCategoryKeys, ["music-production"]);
+    assert.deepEqual(merged.basedIn, { countryCode: "US", city: "Brooklyn" });
+  });
+});
+
+describe("mergePreferredCriteriaPerAxis (M2 #87 5th review Finding 1)", () => {
+  test("buyer-supplied preferred categoryKeys wins; AI's other preferred axes are preserved", () => {
+    const aiPreferred: TalentSearchPreferredCriteriaV1 = {
+      categoryKeys: ["mixing"],
+      genreTags: ["Dancehall"],
+    };
+    const buyerPreferred: TalentSearchPreferredCriteriaV1 = {
+      categoryKeys: ["songwriting"],
+    };
+    const merged = mergePreferredCriteriaPerAxis(aiPreferred, buyerPreferred);
+    assert.deepEqual(merged.categoryKeys, ["songwriting"]);
+    assert.deepEqual(merged.genreTags, ["Dancehall"]);
+  });
 });

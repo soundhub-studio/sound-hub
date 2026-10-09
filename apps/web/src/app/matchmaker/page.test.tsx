@@ -765,17 +765,26 @@ describe("BriefSummary presentation coverage", () => {
 // ---------- Source-pattern contract tests ----------
 
 describe("BG3 Matchmaker page source contract", () => {
-  test("DEFAULT_BRIEF preserves the shipped Brooklyn-based phrasing (GS 14)", () => {
-    // The buyer UI ships this exact brief text; the deterministic
-    // adapter must recognise "Brooklyn-based" so the required
-    // location survives interpretation. If a refactor changes the
-    // phrasing, the deterministic adapter's LOCATION_PHRASES
-    // table must keep up.
+  test("M2 (#87) 5th review — page no longer ships a sample DEFAULT_BRIEF (Finding 2 — truthful brief)", () => {
+    // M2 (#87) 5th review: the matchmaker MUST derive the brief
+    // text from the saved query + structured criteria. The
+    // previous DEFAULT_BRIEF sample copy ("I need a Brooklyn-
+    // based producer...") was a spec violation: it invented
+    // requirements the buyer never expressed. The page now
+    // composes a brief from the recovered record via
+    // `deriveTruthfulBrief` instead of falling back to a sample
+    // string. The Brooklyn-based wording still survives inside
+    // the deterministic adapter's LOCATION_PHRASES table (the
+    // adapter's vocabulary), but the matchmaker page must NOT
+    // pre-fill a buyer-visible brief with invented copy.
     const source = readMatchmakerPage();
-    assert.match(
-      source,
-      /DEFAULT_BRIEF\s*=\s*"I need a Brooklyn-based producer[^"]*"/,
-      "DEFAULT_BRIEF must use Brooklyn-based phrasing so the deterministic adapter preserves the required location",
+    assert.ok(
+      !/DEFAULT_BRIEF\s*=/.test(source),
+      "matchmaker page MUST NOT export a sample DEFAULT_BRIEF constant (Finding 2 — truthful brief from saved query + criteria)",
+    );
+    assert.ok(
+      !/I need a Brooklyn-based producer/i.test(source),
+      "matchmaker page MUST NOT contain the invented Brooklyn-based producer sample copy (Finding 2)",
     );
   });
 
@@ -924,22 +933,34 @@ describe("M2 (#87) Matchmaker page — Talent continuation contract", () => {
     // preserved across the auth/intent round-trip. The matchmaker
     // MUST initialize briefText from the recovered query so the
     // buyer does not have to re-type the brief they composed on
-    // /talent after onboarding.
+    // /talent after onboarding. M2 (#87) 5th review: the brief
+    // MUST be derived truthfully from the saved query +
+    // structured criteria; the page MUST NOT fall back to an
+    // invented DEFAULT_BRIEF.
     const source = readMatchmakerPage();
     assert.match(
       source,
-      /deriveInitialBrief\(readTalentMatchmakerContext\(\)\)/,
-      "Matchmaker page MUST initialize briefText via deriveInitialBrief(readTalentMatchmakerContext())",
+      /deriveTruthfulBrief\(readTalentMatchmakerContext\(\)\)/,
+      "Matchmaker page MUST initialize briefText via deriveTruthfulBrief(readTalentMatchmakerContext())",
     );
     assert.match(
       source,
-      /function deriveInitialBrief\(record: TalentMatchmakerContext \| null\)/,
-      "deriveInitialBrief must accept the recovered record shape",
+      /function deriveTruthfulBrief\(record: TalentMatchmakerContext \| null\)/,
+      "deriveTruthfulBrief must accept the recovered record shape",
+    );
+    // The 5th review: a 2–7 character query must not fail
+    // Matchmaker validation, and filter-only searches must not
+    // fall back to unrelated DEFAULT_BRIEF content. The page
+    // composes a brief from the saved query + structured
+    // criteria instead of inventing a sample brief.
+    assert.ok(
+      !/I need a Brooklyn-based producer/i.test(source),
+      "Matchmaker page MUST NOT contain the invented DEFAULT_BRIEF sample copy (Finding 2 — truthful brief from saved query + criteria)",
     );
     assert.match(
       source,
-      /if \(record\.query\.trim\(\)\.length > 0\) return record\.query/,
-      "deriveInitialBrief must return the recovered query when non-empty (not the default brief)",
+      /composeBriefFromCriteria/,
+      "Matchmaker page MUST compose a brief from the saved structured criteria when the recovered query is empty (Finding 2 — filter-only path)",
     );
   });
 
@@ -1043,6 +1064,76 @@ describe("M2 (#87) Matchmaker page — Talent continuation contract", () => {
       source,
       /forceOpen=\{forceFiltersOpen\}/,
       "matchmaker page MUST force the FiltersDisclosure open when the recovered record carries pre-filled filter values (Finding 8)",
+    );
+  });
+
+  // M2 (#87) 5th review Finding 2: the brief is derived from the
+  // saved query + structured criteria (truthful), and a 2–7 char
+  // query does not fail Matchmaker's briefText schema (≥ 8 chars
+  // after normalization). The page MUST NOT contain the
+  // invented DEFAULT_BRIEF copy ("I need a Brooklyn-based
+  // producer...") — that was a real spec violation pinned by
+  // Codex 5th review.
+  test("Finding 2 — brief is derived from saved query + structured criteria, not invented (5th review)", () => {
+    const source = readMatchmakerPage();
+    // The page MUST derive the brief from query + criteria.
+    assert.match(
+      source,
+      /deriveTruthfulBrief\(readTalentMatchmakerContext\(\)\)/,
+      "matchmaker page MUST initialize briefText via deriveTruthfulBrief (query + criteria, not invented copy)",
+    );
+    // The page MUST compose a brief from the structured criteria
+    // when the recovered query is empty (filter-only search).
+    assert.match(
+      source,
+      /composeBriefFromCriteria/,
+      "matchmaker page MUST compose a brief from the saved structured criteria when the query is empty (filter-only path)",
+    );
+    // The page MUST NOT contain the invented DEFAULT_BRIEF.
+    assert.ok(
+      !/I need a Brooklyn-based producer/i.test(source),
+      "matchmaker page MUST NOT contain the invented DEFAULT_BRIEF sample copy (Finding 2 — truthful brief)",
+    );
+  });
+
+  // M2 (#87) 5th review Finding 3: the saved offeringId is
+  // located in either `bestMatchingOffering` or
+  // `additionalMatchingOfferings` and is the one used by Send
+  // project request. The page imports the helper from a
+  // dedicated module (the helper cannot be a page-module
+  // export — Next.js enforces a strict default + route-only
+  // export surface).
+  test("Finding 3 — saved offeringId is located across both best and additional offerings (5th review)", () => {
+    const source = readMatchmakerPage();
+    // The page MUST import the helper from its own module.
+    assert.match(
+      source,
+      /import\s*\{\s*findSavedOfferingId\s*\}\s*from\s*["']\.\/find-saved-offering-id["']/,
+      "matchmaker page MUST import findSavedOfferingId from ./find-saved-offering-id (the helper cannot be a page-module export)",
+    );
+    // The page MUST use the helper to drive the highlight.
+    assert.match(
+      source,
+      /findSavedOfferingId\(recommendation,\s*highlightedOfferingId\)/,
+      "matchmaker page MUST use findSavedOfferingId to drive the row highlight (Finding 3)",
+    );
+    // The page MUST pass a `targetOfferingId` to `onInvite` so
+    // the Send project request targets the saved offering
+    // (not the row's best matching offering) when the saved
+    // offering is in `additionalMatchingOfferings`.
+    assert.match(
+      source,
+      /onInvite=\{[^}]*targetOfferingId[^}]*\}/,
+      "matchmaker page MUST pass a targetOfferingId to onInvite so Send project request targets the saved offering (Finding 3)",
+    );
+    // The page MUST forward the targetOfferingId to the
+    // inviteFromRecommendation seam so the API receives the
+    // saved offering's id (NOT the row's best matching
+    // offering).
+    assert.match(
+      source,
+      /targetOfferingId:\s*offeringId/,
+      "matchmaker page MUST forward targetOfferingId to the inviteFromRecommendation seam (Finding 3)",
     );
   });
 });

@@ -271,27 +271,26 @@ export class MatchmakerService {
       }
     }
 
-    // M2 (#87) Finding 8: merge buyer-supplied required +
-    // preferred axes. The buyer's required block is authoritative
-    // and OVERRIDES the AI's required block (the AI is never
-    // allowed to relax a buyer-supplied hard constraint). The
-    // buyer's preferred block (when present) overrides the AI's
-    // preferred block. The AI's `query` axis is preserved when
-    // present and the buyer did not supply a query, otherwise
-    // the buyer's briefText is the only text the AI sees (the
-    // schema requires a query axis; if the buyer supplied a
-    // query, the AI's query is the natural-language brief, which
-    // the schema normalizes into the same shape).
+    // M2 (#87) Finding 8 (5th review): per-axis merge of
+    // buyer-supplied required + preferred axes. The buyer wins
+    // only on the specific axes the buyer supplied a value for
+    // (the "conflict" axes). Non-conflicting AI-derived axes
+    // are preserved — the AI is allowed to contribute axes the
+    // buyer did not name, but the AI is never allowed to relax
+    // a buyer-supplied hard axis. An axis is "buyer-supplied"
+    // when its value is present in the buyer's criteria block
+    // (non-empty string array, non-empty mode array, or a
+    // location object with at least one non-empty sub-field).
     if (input.buyerRequired !== undefined) {
       criteria = {
         ...criteria,
-        required: input.buyerRequired,
+        required: mergeRequiredCriteriaPerAxis(criteria.required, input.buyerRequired),
       };
     }
     if (input.buyerPreferred !== undefined) {
       criteria = {
         ...criteria,
-        preferred: input.buyerPreferred,
+        preferred: mergePreferredCriteriaPerAxis(criteria.preferred ?? {}, input.buyerPreferred),
       };
     }
 
@@ -593,3 +592,108 @@ function collectExplanations(
 // Avoid a circular import at module load by re-exporting the
 // response shape for routes that need it.
 export type { SubmitBriefResponseV1 };
+
+// M2 (#87) Finding 8 (5th review): per-axis merge helpers.
+//
+// The buyer's `required` block is merged with the AI's `required`
+// block on a per-axis basis. An axis the buyer supplied a value
+// for wins over the AI's value for that same axis; an axis the
+// buyer did NOT supply is preserved from the AI. This rule
+// guarantees two invariants:
+//
+//   1. The AI is never allowed to relax a buyer-supplied hard
+//      axis. A buyer who named a constraint gets exactly that
+//      constraint.
+//   2. The AI is allowed to contribute axes the buyer did not
+//      name. A buyer who supplied only `primaryCategoryKeys`
+//      does not erase the AI's inferred `serviceModes`,
+//      `basedIn`, or `serviceArea` — the buyer's brief and the
+//      AI's interpretation are both first-class inputs.
+//
+// An axis is "buyer-supplied" when:
+//   - `primaryCategoryKeys` is a non-empty array.
+//   - `independentlyPurchasableServiceKeys` is a non-empty array.
+//   - `serviceModes` is a non-empty array.
+//   - `basedIn` is a non-empty location object (at least one
+//     of city/region/countryCode is set).
+//   - `serviceArea` is a non-empty location object.
+//
+// The merge is exposed at module scope (not a private helper)
+// so the focused unit test can drive the per-axis semantics
+// without spinning up the full MatchmakerService.
+function isLocationSet(
+  value: { city?: string; region?: string; countryCode?: string } | undefined,
+): boolean {
+  if (value === undefined) return false;
+  return (
+    (value.city !== undefined && value.city.length > 0) ||
+    (value.region !== undefined && value.region.length > 0) ||
+    (value.countryCode !== undefined && value.countryCode.length > 0)
+  );
+}
+
+export function mergeRequiredCriteriaPerAxis(
+  aiRequired: TalentSearchRequiredCriteriaV1,
+  buyerRequired: TalentSearchRequiredCriteriaV1,
+): TalentSearchRequiredCriteriaV1 {
+  const merged: TalentSearchRequiredCriteriaV1 = { ...aiRequired };
+  if (
+    buyerRequired.primaryCategoryKeys !== undefined &&
+    buyerRequired.primaryCategoryKeys.length > 0
+  ) {
+    merged.primaryCategoryKeys = [...buyerRequired.primaryCategoryKeys];
+  }
+  if (
+    buyerRequired.independentlyPurchasableServiceKeys !== undefined &&
+    buyerRequired.independentlyPurchasableServiceKeys.length > 0
+  ) {
+    merged.independentlyPurchasableServiceKeys = [
+      ...buyerRequired.independentlyPurchasableServiceKeys,
+    ];
+  }
+  if (buyerRequired.serviceModes !== undefined && buyerRequired.serviceModes.length > 0) {
+    merged.serviceModes = [...buyerRequired.serviceModes];
+  }
+  if (isLocationSet(buyerRequired.basedIn)) {
+    merged.basedIn = { ...buyerRequired.basedIn };
+  }
+  if (isLocationSet(buyerRequired.serviceArea)) {
+    merged.serviceArea = { ...buyerRequired.serviceArea };
+  }
+  return merged;
+}
+
+export function mergePreferredCriteriaPerAxis(
+  aiPreferred: TalentSearchPreferredCriteriaV1,
+  buyerPreferred: TalentSearchPreferredCriteriaV1,
+): TalentSearchPreferredCriteriaV1 {
+  const merged: TalentSearchPreferredCriteriaV1 = { ...aiPreferred };
+  if (buyerPreferred.categoryKeys !== undefined && buyerPreferred.categoryKeys.length > 0) {
+    merged.categoryKeys = [...buyerPreferred.categoryKeys];
+  }
+  if (
+    buyerPreferred.includedServiceKeys !== undefined &&
+    buyerPreferred.includedServiceKeys.length > 0
+  ) {
+    merged.includedServiceKeys = [...buyerPreferred.includedServiceKeys];
+  }
+  if (buyerPreferred.specialties !== undefined && buyerPreferred.specialties.length > 0) {
+    merged.specialties = [...buyerPreferred.specialties];
+  }
+  if (buyerPreferred.genreTags !== undefined && buyerPreferred.genreTags.length > 0) {
+    merged.genreTags = [...buyerPreferred.genreTags];
+  }
+  if (
+    buyerPreferred.caribbeanAffiliationCodes !== undefined &&
+    buyerPreferred.caribbeanAffiliationCodes.length > 0
+  ) {
+    merged.caribbeanAffiliationCodes = [...buyerPreferred.caribbeanAffiliationCodes];
+  }
+  if (buyerPreferred.serviceModes !== undefined && buyerPreferred.serviceModes.length > 0) {
+    merged.serviceModes = [...buyerPreferred.serviceModes];
+  }
+  if (isLocationSet(buyerPreferred.basedIn)) {
+    merged.basedIn = { ...buyerPreferred.basedIn };
+  }
+  return merged;
+}
