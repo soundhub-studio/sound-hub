@@ -779,7 +779,7 @@ describe("BG3 Matchmaker page source contract", () => {
     );
   });
 
-  test("buyer submission delegates to the test seam and forwards actingWorkspaceId + briefText", () => {
+  test("buyer submission delegates to the test seam and forwards actingWorkspaceId + briefText + required", () => {
     const source = readMatchmakerPage();
     // The page MUST route the form submit through the test seam
     // so the runtime UI test can exercise the full payload +
@@ -790,10 +790,20 @@ describe("BG3 Matchmaker page source contract", () => {
       /await submitBriefFromForm\(\{/,
       "buyer page must delegate to submitBriefFromForm test seam",
     );
+    // M2 (#87) Finding 8: the page MUST forward the buyer's
+    // M1 strict required filters to the brief submission so the
+    // API applies them verbatim (the AI never relaxes a
+    // buyer-supplied hard axis). The forward may use a
+    // conditional spread; the regex tolerates either ordering.
     assert.match(
       source,
-      /actingWorkspaceId,\s*briefText,\s*setError,\s*setResponse,\s*setSubmitting/,
-      "buyer page must forward all five state setters + the form fields",
+      /required\s*[:?]/,
+      "buyer page must forward the buyer-supplied `required` M1 strict criteria to the brief submission",
+    );
+    assert.match(
+      source,
+      /setError,\s*setResponse,\s*setSubmitting/,
+      "buyer page must forward the three state setters",
     );
   });
 
@@ -958,6 +968,81 @@ describe("M2 (#87) Matchmaker page — Talent continuation contract", () => {
     assert.ok(
       successClearCall,
       "Talent continuation MUST be cleared inside the setSuccess callback so a successful Send project request is the terminal boundary",
+    );
+  });
+
+  // M2 (#87) P1 — Codex 4th review Finding 11. The matchmaker's
+  // signed-out card carried a "Sign in to continue" CTA whose
+  // href was `/login?return=/matchmaker?from=talent`. A brand-new
+  // sign-in then lands on /matchmaker with no Buyer capability
+  // and hits the no-Buyer dead-end. The CTA must route through
+  // /workspace/intent first so a new user is provisioned with
+  // Buyer capability (or can use the Buyer-only skip link) before
+  // reaching /matchmaker.
+  test("signed-out Sign-in CTA chains through /workspace/intent to provision Buyer capability (Finding 11)", () => {
+    const source = readMatchmakerPage();
+    // The chained return MUST be exactly the one the talent page
+    // uses (single source of truth for the cross-flow routing).
+    assert.match(
+      source,
+      /\/login\?return=\/workspace\/intent\?return=\/matchmaker/,
+      "matchmaker signed-out CTA MUST route through /workspace/intent before reaching /matchmaker (chain return so a brand-new account is provisioned with Buyer capability)",
+    );
+    // A regression that re-introduces the direct
+    // /login?return=/matchmaker href (no chain) fails this assertion.
+    assert.ok(
+      !/href="\/login\?return=\/matchmaker\?from=talent"/.test(source),
+      "matchmaker signed-out CTA MUST NOT use the direct /login?return=/matchmaker href (would land a brand-new account on the no-Buyer dead-end)",
+    );
+  });
+
+  // M2 (#87) Finding 8 — apply recovered strict filters to
+  // Matchmaker. The matchmaker brief form MUST keep M1 strict
+  // required filters available through progressive disclosure
+  // and MUST pre-fill them from the recovered Talent continuation
+  // record. The brief submission MUST forward them to the API
+  // verbatim so the AI never relaxes a buyer-supplied hard
+  // axis. This is the spec acceptance criterion that the
+  // /talent → /matchmaker round-trip does not lose the buyer's
+  // structured search constraints (including a filter-only
+  // search).
+  test("Finding 8 — matchmaker renders M1 strict filters via progressive disclosure and pre-fills from the recovered record", () => {
+    const source = readMatchmakerPage();
+    // The matchmaker MUST render the same `RequiredFilters`
+    // component used on /talent so the M1 contract (progressive
+    // disclosure of structured required filters) is honored.
+    assert.match(
+      source,
+      /import\s*\{[^}]*RequiredFilters[^}]*\}\s*from\s*["']\.\.\/components\/RequiredFilters["']/,
+      "matchmaker page MUST import the RequiredFilters component to keep M1 strict required filters available through progressive disclosure",
+    );
+    assert.match(
+      source,
+      /<RequiredFilters/,
+      "matchmaker page MUST render the RequiredFilters component (the M1 strict filter surface)",
+    );
+    // The page MUST pre-fill the filters from the recovered
+    // Talent continuation record (lazy initializer — same shape
+    // as the brief pre-fill).
+    assert.match(
+      source,
+      /deriveInitialFilters\(readTalentMatchmakerContext\(\)\)/,
+      "matchmaker page MUST pre-fill the strict required filters from the recovered Talent continuation record (Finding 8)",
+    );
+    // The page MUST forward the strict required filters to the
+    // brief submission so the API applies them verbatim.
+    assert.match(
+      source,
+      /buildRequiredCriteriaPayload\(requiredFilters\)/,
+      "matchmaker page MUST convert the form's RequiredFiltersValue into a TalentSearchRequiredCriteriaV1 payload before submitting the brief (Finding 8)",
+    );
+    // The page MUST force the disclosure open when the
+    // recovered record carries any pre-filled filter value so
+    // the buyer can see the recovered state on first paint.
+    assert.match(
+      source,
+      /forceOpen=\{forceFiltersOpen\}/,
+      "matchmaker page MUST force the FiltersDisclosure open when the recovered record carries pre-filled filter values (Finding 8)",
     );
   });
 });

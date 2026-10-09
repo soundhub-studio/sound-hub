@@ -27,6 +27,7 @@ import type {
   AiInterpretBriefOutputV1,
   TalentSearchRequestV1,
   TalentSearchResponseV1,
+  TalentSearchRequiredCriteriaV1,
 } from "@soundhub/types";
 import {
   InMemoryAuthRepository,
@@ -379,6 +380,84 @@ test("MatchmakerService preserves required constraints end-to-end (GS 14)", asyn
   assert.ok(required.serviceModes?.includes("Remote"));
   assert.ok(required.primaryCategoryKeys?.some((k) => k === "music-production"));
   assert.equal(required.basedIn?.countryCode, "US");
+});
+
+// M2 (#87) Codex 4th review Finding 8: when the buyer supplies a
+// strict required criteria block alongside the brief text (e.g.
+// a buyer who searched on /talent with structured constraints
+// and is now back on /matchmaker), the service MUST apply the
+// buyer's required axes verbatim. The AI may produce additional
+// required axes (e.g. from the brief text), but the AI MUST NOT
+// relax, drop, or rewrite a buyer-supplied hard axis. The
+// search service receives the merged block; the buyer's axes
+// win on every field.
+test("MatchmakerService applies buyer-supplied required criteria verbatim (Finding 8)", async () => {
+  const { service, search } = buildService({});
+  // The buyer supplies a strict required block: only
+  // "songwriting" category, no specific location, no service
+  // mode. The AI may infer additional axes from the brief
+  // text, but every buyer-supplied axis MUST survive in the
+  // final search request.
+  const buyerRequired: TalentSearchRequiredCriteriaV1 = {
+    primaryCategoryKeys: ["songwriting"],
+  };
+  const result = await service.submitBrief({
+    userAccountId: BUYER_USER_ID,
+    actingWorkspaceId: BUYER_WORKSPACE_ID,
+    briefText: "I need a producer for a Caribbean pop single.",
+    buyerRequired,
+  });
+  // The persisted brief records the buyer's required block as
+  // authoritative (it overrides the AI's required block).
+  const persisted = result.brief.criteria;
+  assert.deepEqual(
+    persisted.required.primaryCategoryKeys,
+    ["songwriting"],
+    "buyer-supplied primaryCategoryKeys MUST win over the AI's required block",
+  );
+  // The search service was invoked with the buyer's required
+  // block — the AI never had a chance to relax it.
+  assert.equal(search.calls.length, 1);
+  const call = search.calls[0]!;
+  assert.deepEqual(
+    call.required?.primaryCategoryKeys,
+    ["songwriting"],
+    "buyer-supplied primaryCategoryKeys MUST reach the search service unchanged",
+  );
+});
+
+// M2 (#87) Finding 8: a filter-only buyer (no query text, just
+// strict filters) MUST still get the filters applied to the
+// matchmaker submission. The briefText can be the canonical
+// fallback (e.g. DEFAULT_BRIEF on the web side) but the buyer's
+// required axes are non-negotiable.
+test("MatchmakerService applies buyer-supplied required criteria even when the brief text is a generic fallback (Finding 8 — filter-only path)", async () => {
+  const { service, search } = buildService({});
+  const buyerRequired: TalentSearchRequiredCriteriaV1 = {
+    primaryCategoryKeys: ["mixing"],
+    serviceModes: ["Remote"],
+    basedIn: { countryCode: "JM" },
+  };
+  // The brief text is the DEFAULT_BRIEF placeholder (the web
+  // page falls back to this when the recovered record's query
+  // is empty). The buyer's strict filters must still be the
+  // authoritative axes.
+  const result = await service.submitBrief({
+    userAccountId: BUYER_USER_ID,
+    actingWorkspaceId: BUYER_WORKSPACE_ID,
+    briefText:
+      "I need a Brooklyn-based producer for a remote Haitian dancehall single, ideally delivered before March 14.",
+    buyerRequired,
+  });
+  assert.equal(search.calls.length, 1);
+  const call = search.calls[0]!;
+  assert.deepEqual(call.required?.primaryCategoryKeys, ["mixing"]);
+  assert.deepEqual(call.required?.serviceModes, ["Remote"]);
+  assert.equal(call.required?.basedIn?.countryCode, "JM");
+  // The persisted criteria match the buyer's required block.
+  assert.deepEqual(result.brief.criteria.required.primaryCategoryKeys, ["mixing"]);
+  assert.deepEqual(result.brief.criteria.required.serviceModes, ["Remote"]);
+  assert.equal(result.brief.criteria.required.basedIn?.countryCode, "JM");
 });
 
 test("MatchmakerService surfaces additional matching offerings end-to-end", async () => {

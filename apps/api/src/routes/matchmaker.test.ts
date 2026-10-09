@@ -235,4 +235,34 @@ describe("Matchmaker route contract", () => {
     assert.equal(response.status, 403);
     assert.equal((response.body as { error: { code: string } }).error.code, "BRIEF_FORBIDDEN");
   });
+
+  // M2 (#87) Finding 8 — buyer-supplied required criteria reach
+  // the service. The route accepts an optional `required` block
+  // (matching the shared `talentSearchRequiredCriteriaV1Schema`)
+  // and forwards it to the service as `buyerRequired` so the
+  // matchmaker brief submission can preserve the buyer's strict
+  // filters across the /talent → /matchmaker round-trip.
+  test("POST /api/matchmaker/brief forwards buyer-supplied required criteria to the service (Finding 8)", async () => {
+    const response = await request(app)
+      .post("/api/matchmaker/brief")
+      .send({
+        actingWorkspaceId: BUYER_WORKSPACE_ID,
+        briefText: "Need a Brooklyn producer for a remote Haitian dancehall single.",
+        required: {
+          primaryCategoryKeys: ["songwriting"],
+          serviceModes: ["Remote"],
+          basedIn: { countryCode: "JM" },
+        },
+      });
+    assert.equal(response.status, 200);
+    assert.ok(mm.submitCalls.length >= 1);
+    const lastCall = mm.submitCalls[mm.submitCalls.length - 1] as {
+      readonly buyerRequired?: unknown;
+    };
+    assert.deepEqual(lastCall.buyerRequired, {
+      primaryCategoryKeys: ["songwriting"],
+      serviceModes: ["Remote"],
+      basedIn: { countryCode: "JM" },
+    });
+  });
 });

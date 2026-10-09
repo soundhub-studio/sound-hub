@@ -73,7 +73,6 @@ test.describe("M2 #87 — Talent → Matchmaker buyer flow", () => {
 
   test("Back to talent link is rendered on /matchmaker when the localStorage record is present", async ({
     page,
-    context,
   }) => {
     // Pre-seed the localStorage record on the test origin so the
     // /matchmaker page reads it on mount.
@@ -88,9 +87,13 @@ test.describe("M2 #87 — Talent → Matchmaker buyer flow", () => {
     // Land on the dashboard.
     await page.getByTestId("dashboard").waitFor({ timeout: 15_000 });
 
-    // Seed a Talent continuation record into localStorage on the
-    // test origin.
-    await context.addInitScript(() => {
+    // Navigate to /matchmaker first so the page's origin is
+    // established; then seed the localStorage record with
+    // `page.evaluate` (NOT `context.addInitScript` — that re-runs
+    // on every navigation and reload, which would defeat the
+    // remove-and-reload assertion below).
+    await page.goto("/matchmaker");
+    await page.evaluate(() => {
       const record = {
         source: "talent",
         offeringId: "of-test-1",
@@ -106,14 +109,17 @@ test.describe("M2 #87 — Talent → Matchmaker buyer flow", () => {
       };
       window.localStorage.setItem("soundhub.talent-matchmaker-context", JSON.stringify(record));
     });
+    // Reload so the page re-mounts with the seeded record.
+    await page.reload();
 
-    // Navigate to /matchmaker and verify the Back to talent link is present.
-    await page.goto("/matchmaker");
+    // The Back to talent link is present when the record is seeded.
     const backLink = page.getByTestId("matchmaker-back-to-talent");
     await expect(backLink).toBeVisible();
 
     // Clearing the localStorage record and reloading should hide
-    // the link (it depends on the record's presence).
+    // the link (it depends on the record's presence). Because we
+    // seeded via page.evaluate (not addInitScript), the reload
+    // does NOT re-create the record.
     await page.evaluate(() => {
       window.localStorage.removeItem("soundhub.talent-matchmaker-context");
     });

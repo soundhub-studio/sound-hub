@@ -34,6 +34,8 @@ import type {
   PublicOfferingSummaryV1,
   PublicSellerSummaryV1,
   TalentSearchRequestV1,
+  TalentSearchRequiredCriteriaV1,
+  TalentSearchPreferredCriteriaV1,
   TalentSearchResponseV1,
 } from "@soundhub/types";
 import { matchmakerCriteriaV1Schema, publicOfferingSummaryV1Schema } from "@soundhub/types";
@@ -93,6 +95,21 @@ export interface SubmitBriefInput {
   readonly userAccountId: string;
   readonly actingWorkspaceId: string;
   readonly briefText: string;
+  /**
+   * M2 (#87) Finding 8: optional buyer-supplied required criteria.
+   * When present, the buyer's required block overrides the AI's
+   * required block. The values round-trip through
+   * `talentSearchRequiredCriteriaV1Schema` at the route boundary;
+   * the service does not re-validate them.
+   */
+  readonly buyerRequired?: TalentSearchRequiredCriteriaV1;
+  /**
+   * M2 (#87) Finding 8: optional buyer-supplied preferred criteria.
+   * When present, the buyer's preferred block overrides the AI's
+   * preferred block. The values round-trip through
+   * `talentSearchPreferredCriteriaV1Schema` at the route boundary.
+   */
+  readonly buyerPreferred?: TalentSearchPreferredCriteriaV1;
   readonly buyerNonSearchRequirements?: Record<string, string>;
 }
 
@@ -143,6 +160,19 @@ export class MatchmakerService {
    *   6. Persist the Brief + results in a single transactional
    *      write.
    *   7. Return the buyer-safe DTO (recommendations + brief).
+   *
+   * M2 (#87) Finding 8 — buyer-supplied required criteria
+   * preservation: when the buyer supplies `required` (and/or
+   * `preferred`) in the request, those axes are applied to the
+   * search request as-is. The AI is still invoked for the
+   * natural-language brief text to derive the `query` axis and
+   * any non-supplied preferred axes, but a buyer-supplied
+   * required axis is never relaxed, dropped, or rewritten by the
+   * AI. The merge rule is: AI output is authoritative for the
+   * `query` axis and for any non-supplied preferred axes; the
+   * buyer's required axes are authoritative for the `required`
+   * block; the buyer's preferred axes (when present) override
+   * the AI's preferred axes.
    */
   async submitBrief(input: SubmitBriefInput): Promise<SubmitBriefResult> {
     const membership = await this.requireBuyer(input.userAccountId, input.actingWorkspaceId);
@@ -239,6 +269,30 @@ export class MatchmakerService {
           "MATCHMAKER_INVALID_REQUEST",
         );
       }
+    }
+
+    // M2 (#87) Finding 8: merge buyer-supplied required +
+    // preferred axes. The buyer's required block is authoritative
+    // and OVERRIDES the AI's required block (the AI is never
+    // allowed to relax a buyer-supplied hard constraint). The
+    // buyer's preferred block (when present) overrides the AI's
+    // preferred block. The AI's `query` axis is preserved when
+    // present and the buyer did not supply a query, otherwise
+    // the buyer's briefText is the only text the AI sees (the
+    // schema requires a query axis; if the buyer supplied a
+    // query, the AI's query is the natural-language brief, which
+    // the schema normalizes into the same shape).
+    if (input.buyerRequired !== undefined) {
+      criteria = {
+        ...criteria,
+        required: input.buyerRequired,
+      };
+    }
+    if (input.buyerPreferred !== undefined) {
+      criteria = {
+        ...criteria,
+        preferred: input.buyerPreferred,
+      };
     }
 
     // Provenance. The fallback flag is true if EITHER path was

@@ -216,7 +216,27 @@ function IntentPageInner() {
   // interstitial so the human makes the acting-Workspace choice
   // consciously; do NOT use the first Personal Workspace path
   // id as a fallback.
+  //
+  // M2 (#87) P2 (Codex 4th review): the switch's return target
+  // must route back through intent, not directly to the saved
+  // /matchmaker return. The previous wiring sent the post-switch
+  // navigation straight to validatedReturnTo, which skipped
+  // intent entirely and landed on /matchmaker with no Buyer
+  // capability — the matchmaker then displayed the no-Buyer
+  // dead-end. By sending the switch through intent, the user is
+  // forced to (re-)present the intent choice and provision Buyer
+  // capability before reaching /matchmaker.
   if (!personalActor) {
+    // The switch's post-switch destination. When a validated
+    // return target exists, route the switch through intent so
+    // the human always re-presents their intent choice before
+    // landing on the original return. When no return is set,
+    // sending the switch to /workspace/intent (without an inner
+    // return) is equivalent to the current default of /dashboard
+    // because intent provisions then falls through to /dashboard.
+    const switchReturn = validatedReturnTo
+      ? `/workspace/intent?return=${encodeURIComponent(validatedReturnTo)}`
+      : "/workspace/intent";
     return (
       <div className="min-h-screen bg-canvas">
         <div className="max-w-[1440px] mx-auto px-6 lg:px-12 py-12">
@@ -235,9 +255,7 @@ function IntentPageInner() {
                   individual.
                 </p>
                 <a
-                  href={`/workspace/switch?target=${encodeURIComponent(personalWorkspace.workspaceId)}${
-                    validatedReturnTo ? `&return=${encodeURIComponent(validatedReturnTo)}` : ""
-                  }`}
+                  href={`/workspace/switch?target=${encodeURIComponent(personalWorkspace.workspaceId)}&return=${encodeURIComponent(switchReturn)}`}
                   className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] py-3 px-6 text-base font-medium text-white bg-aubergine hover:bg-aubergine-hover rounded focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-aubergine"
                   data-testid="intent-switch-to-personal"
                 >
@@ -261,6 +279,26 @@ function IntentPageInner() {
   const isBuyer = currentCapabilities.includes("Buyer");
   const isSeller = currentCapabilities.includes("Seller");
   const hasBoth = isBuyer && isSeller;
+
+  // M2 (#87) P2 (Codex 4th review Finding 12): the "Continue
+  // without changing capabilities" link is an explicit buyer
+  // signal that "I don't need to add anything, send me back to
+  // where I was." When the saved return target is /matchmaker,
+  // that destination requires Buyer capability to render
+  // recommendations — a Seller-only Workspace cannot use
+  // /matchmaker. Exposing the skip link to a Seller-only
+  // Workspace heading to /matchmaker creates a dead end: the
+  // user lands on /matchmaker and immediately sees the no-Buyer
+  // warning. The link therefore stays Buyer-only when the
+  // return is to /matchmaker. For other return targets (e.g.
+  // /dashboard), the original behavior is preserved: any
+  // partial-capability Workspace can skip.
+  const isMatchmakerReturn =
+    validatedReturnTo !== null && validatedReturnTo.startsWith("/matchmaker");
+  const skipLinkEligible =
+    validatedReturnTo !== null &&
+    currentCapabilities.length > 0 &&
+    (isBuyer || !isMatchmakerReturn);
 
   const submitDisabled = intent === null || submitting;
 
@@ -379,7 +417,7 @@ function IntentPageInner() {
                     : "Choose how you want to use SoundHub. You can add the other capability later from the dashboard."}
               </p>
 
-              {validatedReturnTo !== null && currentCapabilities.length > 0 && (
+              {skipLinkEligible && (
                 <a
                   href={validatedReturnTo}
                   className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] mb-4 py-2 px-4 text-sm font-medium text-aubergine hover:text-aubergine-hover border border-aubergine rounded focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-aubergine"

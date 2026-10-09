@@ -32,6 +32,7 @@ import {
 } from "../lib/matchmaker-audio";
 import Link from "next/link";
 import type {
+  ApiFieldErrorV1,
   CategoryMetadataItemV1,
   MatchmakerRecommendationV1,
   SubmitBriefResponseV1,
@@ -42,6 +43,13 @@ import { submitBriefFromForm } from "./submit-brief-from-form";
 import { inviteFromRecommendation } from "./invite-from-recommendation";
 import { BriefSummary } from "./brief-summary";
 import { Card } from "../components/ui/Card";
+import { FiltersDisclosure } from "../components/FiltersDisclosure";
+import { RequiredFilters } from "../components/RequiredFilters";
+import {
+  type RequiredFiltersValue,
+  buildRequiredCriteriaPayload,
+  isLocationFilterValueNonEmpty,
+} from "../lib/talent-search-request-builder";
 import {
   type TalentMatchmakerContext,
   clearTalentMatchmakerContext,
@@ -51,12 +59,47 @@ import {
 const DEFAULT_BRIEF =
   "I need a Brooklyn-based producer for a remote Haitian dancehall single, ideally delivered before March 14.";
 
+const EMPTY_FILTERS: RequiredFiltersValue = {
+  primaryCategoryKey: "",
+  independentlyPurchasableServiceKey: "",
+  serviceModes: [],
+  basedIn: { city: "", region: "", countryCode: "" },
+  serviceArea: { city: "", region: "", countryCode: "" },
+};
+
 function deriveInitialBrief(record: TalentMatchmakerContext | null): string {
   if (record === null) return DEFAULT_BRIEF;
   if (record.query.trim().length > 0) return record.query;
   // Recovered record has no query — fall back to the canonical
   // brief so the form is still usable. The buyer can replace it.
   return DEFAULT_BRIEF;
+}
+
+// M2 (#87) Finding 8: derive the initial M1 strict required filters
+// from the recovered Talent continuation record. A buyer who
+// searched on /talent with structured constraints (e.g. a filter-
+// only search) must not lose those constraints on the way to the
+// matchmaker — the form is pre-filled so the brief submission can
+// apply them verbatim. The buyer can edit the fields; the matchmaker
+// service is the final authority on which axes survive (the schema
+// drops empty axes; the AI never relaxes a buyer-supplied hard
+// axis).
+function deriveInitialFilters(record: TalentMatchmakerContext | null): RequiredFiltersValue {
+  if (record === null) return EMPTY_FILTERS;
+  return record.filters;
+}
+
+// True when the filters carry at least one usable axis. The
+// matchmaker brief form hides the disclosure's "selected" pill
+// when the filters are empty so the buyer is not told "filters
+// applied" on a form that has none.
+function hasAnyFilterValue(filters: RequiredFiltersValue): boolean {
+  if (filters.primaryCategoryKey.length > 0) return true;
+  if (filters.independentlyPurchasableServiceKey.length > 0) return true;
+  if (filters.serviceModes.length > 0) return true;
+  if (isLocationFilterValueNonEmpty(filters.basedIn)) return true;
+  if (isLocationFilterValueNonEmpty(filters.serviceArea)) return true;
+  return false;
 }
 
 export default function MatchmakerPage() {
@@ -70,6 +113,14 @@ export default function MatchmakerPage() {
   // to re-type it after onboarding.
   const [briefText, setBriefText] = useState<string>(() =>
     deriveInitialBrief(readTalentMatchmakerContext()),
+  );
+  // M2 (#87) Finding 8: the matchmaker's strict required filters
+  // are kept available through progressive disclosure and are
+  // pre-filled from the recovered Talent continuation record. The
+  // page forwards them on submit so the API applies them
+  // verbatim — the AI never relaxes a buyer-supplied hard axis.
+  const [requiredFilters, setRequiredFilters] = useState<RequiredFiltersValue>(() =>
+    deriveInitialFilters(readTalentMatchmakerContext()),
   );
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
@@ -146,7 +197,15 @@ export default function MatchmakerPage() {
             <p className="text-gray-700">
               You are not signed in.{" "}
               <Link
-                href="/login?return=/matchmaker?from=talent"
+                // M2 (#87) P1: a brand-new sign-in reaches /matchmaker
+                // with no Buyer capability, hitting the no-Buyer
+                // dead-end. Route through intent first so the buyer
+                // is provisioned with Buyer capability (or can
+                // skip via the Buyer-only continuation link) before
+                // landing on Matchmaker. The intent page's existing
+                // bounded return resolver strips the inner return
+                // back to the same /matchmaker?from=talent value.
+                href="/login?return=/workspace/intent?return=/matchmaker?from=talent"
                 className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] px-4 py-2 rounded-md bg-coral text-white text-sm font-semibold hover:bg-coral-hover transition-colors"
                 data-testid="matchmaker-sign-in-link"
               >
@@ -168,9 +227,21 @@ export default function MatchmakerPage() {
   // rendering + submitting flag) with a controlled fetch.
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    // M2 (#87) Finding 8: forward the buyer-editable M1 strict
+    // required filters to the brief submission. The helper
+    // converts `RequiredFiltersValue` (form shape) to
+    // `TalentSearchRequiredCriteriaV1` (API shape) — the API
+    // applies them verbatim and the AI never relaxes a
+    // buyer-supplied hard axis. When the form is empty
+    // (all axes are blank) the helper returns `undefined` and
+    // the API's `.optional()` field is omitted, so the buyer
+    // can submit a brief that uses only the natural-language
+    // text.
+    const required = buildRequiredCriteriaPayload(requiredFilters);
     await submitBriefFromForm({
       actingWorkspaceId,
       briefText,
+      ...(required ? { required } : {}),
       setError,
       setResponse,
       setSubmitting,
@@ -185,6 +256,13 @@ export default function MatchmakerPage() {
       },
     });
   };
+
+  // M2 (#87) Finding 8: the disclosure is forced open when the
+  // recovered record carries any pre-filled filter value so the
+  // buyer can see the recovered state on first paint; otherwise
+  // the closed-by-default disclosure mirrors the /talent page
+  // composition.
+  const forceFiltersOpen = hasAnyFilterValue(requiredFilters);
 
   return (
     <div className="max-w-3xl mx-auto px-6 py-12 space-y-6" data-testid="matchmaker-page">
@@ -272,6 +350,31 @@ export default function MatchmakerPage() {
                   data-testid="matchmaker-brief-textarea"
                 />
               </label>
+
+              {/* M2 (#87) Finding 8: M1 strict required filters via
+                  progressive disclosure. The same `RequiredFilters`
+                  component used on /talent powers the matchmaker's
+                  structured filter inputs; the disclosure is
+                  pre-filled from the recovered Talent continuation
+                  record so a buyer who searched with strict filters
+                  on /talent does not lose them on the way to
+                  /matchmaker. The brief submission forwards the
+                  criteria to the API verbatim — the AI is never
+                  allowed to relax a buyer-supplied hard axis. */}
+              <FiltersDisclosure
+                value={requiredFilters}
+                onChange={setRequiredFilters}
+                forceOpen={forceFiltersOpen}
+              >
+                <RequiredFilters
+                  value={requiredFilters}
+                  onChange={setRequiredFilters}
+                  fieldErrors={[] as readonly ApiFieldErrorV1[]}
+                  categories={categories}
+                  disabled={submitting}
+                  categorySelectsDisabled={categories.length === 0}
+                />
+              </FiltersDisclosure>
 
               <button
                 type="submit"

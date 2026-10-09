@@ -15,9 +15,10 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { talentSearchRequestV1Schema } from "@soundhub/types";
+import { talentSearchRequestV1Schema, talentSearchRequiredCriteriaV1Schema } from "@soundhub/types";
 import {
   buildCandidatePayload,
+  buildRequiredCriteriaPayload,
   EMPTY_SEARCH_GUIDANCE_MESSAGE,
   getEmptySearchSubmissionMessage,
   hasUsableCriteria,
@@ -504,5 +505,89 @@ describe("getEmptySearchSubmissionMessage (page-level empty-submission guard)", 
         );
       }
     }
+  });
+});
+
+// M2 (#87) Codex 4th review Finding 8: the matchmaker brief
+// submission forwards the buyer's M1 strict required filters to
+// the API so a buyer who searched /talent with structured
+// constraints does not lose them on the round-trip. The
+// `buildRequiredCriteriaPayload` helper produces a typed
+// `TalentSearchRequiredCriteriaV1` payload from the form's
+// `RequiredFiltersValue` shape (or `undefined` when no axis is
+// usable, so the API's `.optional()` field is omitted). Every
+// payload must round-trip through the shared search schema —
+// the schema is the single authority on which axes survive.
+describe("buildRequiredCriteriaPayload — M2 (#87) Finding 8", () => {
+  test("returns undefined when the form carries no usable axis (form-only buyer)", () => {
+    // The buyer never opened the Filters disclosure on /talent
+    // and never supplied a query. The form is empty; the helper
+    // must return `undefined` so the API's `.optional()` field
+    // is omitted (the buyer submits briefText only, the AI
+    // derives everything from the natural-language text).
+    const result = buildRequiredCriteriaPayload(emptyFilters);
+    assert.equal(result, undefined);
+  });
+
+  test("returns the buyer-supplied strict required block when at least one axis is set", () => {
+    // A buyer who searched on /talent with `primaryCategoryKey`
+    // + `serviceModes: ["Remote"]` + `basedIn.countryCode: "HT"`
+    // must not lose any of those axes on the way to the
+    // matchmaker. Every field the buyer supplied must be
+    // preserved verbatim.
+    const filters: RequiredFiltersValue = {
+      primaryCategoryKey: "music-production",
+      independentlyPurchasableServiceKey: "",
+      serviceModes: ["Remote"],
+      basedIn: { city: "", region: "", countryCode: "HT" },
+      serviceArea: emptyLocation,
+    };
+    const result = buildRequiredCriteriaPayload(filters);
+    assert.notEqual(result, undefined);
+    assert.deepEqual(result, {
+      primaryCategoryKeys: ["music-production"],
+      serviceModes: ["Remote"],
+      basedIn: { countryCode: "HT" },
+    });
+  });
+
+  test("omits empty axes (a single empty input does not poison the others)", () => {
+    // The same omission rule as `buildCandidatePayload` so the
+    // matchmaker's filter form behaves identically to /talent.
+    const filters: RequiredFiltersValue = {
+      primaryCategoryKey: "music-production",
+      independentlyPurchasableServiceKey: "",
+      serviceModes: [],
+      basedIn: { city: "", region: "", countryCode: "" },
+      serviceArea: { city: "", region: "", countryCode: "" },
+    };
+    const result = buildRequiredCriteriaPayload(filters);
+    assert.notEqual(result, undefined);
+    assert.deepEqual(result, {
+      primaryCategoryKeys: ["music-production"],
+    });
+  });
+
+  test("the emitted payload parses against the shared search required schema", () => {
+    // Single source of truth: the same `talentSearchRequiredCriteriaV1Schema`
+    // that gates the /api/search route gates the matchmaker brief
+    // submission. A regression that emits a shape the schema
+    // rejects fails this assertion so the buyer cannot end up
+    // with a payload the API would silently drop.
+    const filters: RequiredFiltersValue = {
+      primaryCategoryKey: "music-production",
+      independentlyPurchasableServiceKey: "music-production-beat",
+      serviceModes: ["Remote", "Hybrid"],
+      basedIn: { city: "Brooklyn", region: "NY", countryCode: "US" },
+      serviceArea: { city: "", region: "", countryCode: "HT" },
+    };
+    const result = buildRequiredCriteriaPayload(filters);
+    assert.notEqual(result, undefined);
+    const parsed = talentSearchRequiredCriteriaV1Schema.safeParse(result);
+    assert.equal(
+      parsed.success,
+      true,
+      `helper emitted a payload the shared search schema rejects: ${JSON.stringify(result)}`,
+    );
   });
 });
