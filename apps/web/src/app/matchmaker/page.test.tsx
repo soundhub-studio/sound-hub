@@ -907,3 +907,57 @@ describe("BG3 Matchmaker page source contract", () => {
     );
   });
 });
+
+describe("M2 (#87) Matchmaker page — Talent continuation contract", () => {
+  test("brief is initialized from the recovered Talent continuation record (Finding 3 — pre-fill restored brief)", () => {
+    // M2 (#87) acceptance criterion #11: brief/filter state is
+    // preserved across the auth/intent round-trip. The matchmaker
+    // MUST initialize briefText from the recovered query so the
+    // buyer does not have to re-type the brief they composed on
+    // /talent after onboarding.
+    const source = readMatchmakerPage();
+    assert.match(
+      source,
+      /deriveInitialBrief\(readTalentMatchmakerContext\(\)\)/,
+      "Matchmaker page MUST initialize briefText via deriveInitialBrief(readTalentMatchmakerContext())",
+    );
+    assert.match(
+      source,
+      /function deriveInitialBrief\(record: TalentMatchmakerContext \| null\)/,
+      "deriveInitialBrief must accept the recovered record shape",
+    );
+    assert.match(
+      source,
+      /if \(record\.query\.trim\(\)\.length > 0\) return record\.query/,
+      "deriveInitialBrief must return the recovered query when non-empty (not the default brief)",
+    );
+  });
+
+  test("Talent continuation is cleared on Send project request SUCCESS only (Finding 4 — no clear on failure)", () => {
+    // M2 (#87) acceptance criterion: a successful Send project
+    // request is the terminal boundary that clears the Talent
+    // continuation record. A failure MUST leave the record in
+    // place so the buyer can retry without a new /talent round-
+    // trip. A regression that clears on every completion (success
+    // or failure) would make the Back to talent link reappear
+    // and the highlight survive a request the buyer did not
+    // actually send.
+    const source = readMatchmakerPage();
+    // The clear call MUST live inside the setSuccess callback,
+    // NOT inside setSubmitting. We assert by counting clear calls
+    // and verifying the one that exists lives next to setSuccess.
+    const submitClearCall = /setSubmitting[^}]+clearTalentMatchmakerContext\(\)/.test(source);
+    assert.equal(
+      submitClearCall,
+      false,
+      "Talent continuation MUST NOT be cleared inside the setSubmitting callback (would clear on every completion, including failures)",
+    );
+    const successClearCall = /setSuccess:[^,]+=>\s*\{[^}]*clearTalentMatchmakerContext\(\);/m.test(
+      source,
+    );
+    assert.ok(
+      successClearCall,
+      "Talent continuation MUST be cleared inside the setSuccess callback so a successful Send project request is the terminal boundary",
+    );
+  });
+});

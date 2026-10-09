@@ -12,11 +12,15 @@
 // Three routing branches (M2 #87 acceptance criteria):
 //
 //   - Anonymous (user === null):
-//     router.push("/login?return=/matchmaker?from=talent")
-//     The login page forwards the return through the magic-link
-//     flow; the post-command resolver strips the query and the
-//     buyer lands on /matchmaker (with the localStorage record
-//     carrying the substantive context).
+//     router.push("/login?return=/workspace/intent?return=/matchmaker?from=talent")
+//     The chain routes a brand-new user through Buyer intent
+//     provisioning before landing on /matchmaker. A returning
+//     user who already has Buyer capability is detected by the
+//     intent page's "no capability change needed" path and is
+//     re-routed to the inner return target. Either way, a
+//     brand-new buyer can never reach /matchmaker and hit the
+//     dead-end "Your account does not currently belong to a
+//     Buyer-capable Workspace" warning.
 //
 //   - Signed in, acting Workspace lacks Buyer:
 //     router.push("/workspace/intent?return=/matchmaker?from=talent")
@@ -30,16 +34,29 @@
 //
 // Before any push, the helper writes the Talent continuation
 // record to localStorage via `setTalentMatchmakerContext`. A
-// `setItem` failure (private-browsing quota) surfaces inline
-// and the navigation is aborted so the buyer is never sent
+// `setItem` failure (private-browsing quota) is propagated to
+// the caller (the talent page) which surfaces the failure
+// inline and aborts the navigation so the buyer is never sent
 // to a destination they cannot resume from.
 
 import type { Bg1PublicUserV1, TalentSearchResultV1 } from "@soundhub/types";
 import { setTalentMatchmakerContext } from "./talent-matchmaker-context";
 import type { RequiredFiltersValue } from "./talent-search-request-builder";
 
+export interface NavigateToMatchmakerFromTalentCriteria {
+  readonly query: string;
+  readonly filters: RequiredFiltersValue;
+}
+
 export interface NavigateToMatchmakerFromTalentInput {
   readonly result: TalentSearchResultV1;
+  /**
+   * M2 (#87): the search criteria that produced the rendered
+   * result list. Captured at click time from SearchPage's
+   * `submittedCriteria` snapshot so the matchmaker can pre-fill
+   * the brief form on return.
+   */
+  readonly criteria: NavigateToMatchmakerFromTalentCriteria;
   readonly user: Bg1PublicUserV1 | null;
   readonly actingWorkspace: Bg1PublicUserV1["workspaces"][number] | null;
   readonly actingWorkspaceId: string | null;
@@ -61,29 +78,31 @@ export interface NavigateToMatchmakerFromTalentInput {
   }) => void;
 }
 
-export const MATCHMAKER_FROM_TALENT_LOGIN_RETURN = "/login?return=/matchmaker?from=talent";
+// Chained return context. The post-command return resolver strips
+// the inner `?return=` from the OUTER `returnTo` only when the
+// outer returnTo is the bounded return; the inner return is
+// preserved as a URL query parameter on the intent page and
+// read back via `?return=` on the intent page itself, which
+// forwards it through the standard intent response cycle.
+//
+// Length: 89 chars, well within the 256-char safeReturnTo cap.
+export const MATCHMAKER_FROM_TALENT_LOGIN_RETURN =
+  "/login?return=/workspace/intent?return=/matchmaker%3Ffrom%3Dtalent";
 export const MATCHMAKER_FROM_TALENT_INTENT_RETURN =
-  "/workspace/intent?return=/matchmaker?from=talent";
+  "/workspace/intent?return=/matchmaker%3Ffrom%3Dtalent";
 export const MATCHMAKER_FROM_TALENT_DIRECT = "/matchmaker?from=talent";
 
 export function navigateToMatchmakerFromTalent(input: NavigateToMatchmakerFromTalentInput): void {
   const offeringId = input.result.bestMatchingOffering.offeringId;
-  // The /talent page holds the current (query, filters) tuple in
-  // component-local state; the result card only knows the result.
-  // The buyer-flow context is the search context at click time,
-  // which the page composes into the call. The current minimal
-  // implementation carries only the targeted offering; the page
-  // can pass the full (query, filters) snapshot in a follow-up
-  // without changing the helper's contract.
-  const query = "";
-  const filters: RequiredFiltersValue = {
-    primaryCategoryKey: "",
-    independentlyPurchasableServiceKey: "",
-    serviceModes: [],
-    basedIn: { city: "", region: "", countryCode: "" },
-    serviceArea: { city: "", region: "", countryCode: "" },
-  };
+  const { query, filters } = input.criteria;
 
+  // setTalentMatchmakerContext throws on setItem failure; the
+  // caller (talent page) catches and surfaces the error inline
+  // so the buyer is never sent to a destination they cannot
+  // resume from. Throwing here is intentional — a swallowed
+  // failure would let the page navigate to /matchmaker where
+  // readTalentMatchmakerContext would return null and the
+  // matchmaker would silently render without a highlight.
   const setContext = input.setContext ?? setTalentMatchmakerContext;
   setContext({ source: "talent", offeringId, query, filters });
 

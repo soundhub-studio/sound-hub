@@ -96,7 +96,10 @@ export interface SearchPageProps {
    * Talent continuation record and routes to the matchmaker (or
    * the protected-action login / intent flow).
    */
-  readonly onSendProjectRequest?: (result: TalentSearchResultV1) => void;
+  readonly onSendProjectRequest?: (
+    result: TalentSearchResultV1,
+    criteria: SubmittedCriteria,
+  ) => void;
 }
 
 export function SearchPage({ onSendProjectRequest }: SearchPageProps = {}) {
@@ -448,7 +451,15 @@ export function SearchPage({ onSendProjectRequest }: SearchPageProps = {}) {
                 <ResultCard
                   key={result.seller.sellerId}
                   result={result}
-                  onSendProjectRequest={onSendProjectRequest}
+                  onSendProjectRequest={
+                    onSendProjectRequest
+                      ? (r) =>
+                          onSendProjectRequest(r, {
+                            query: submittedCriteria?.query ?? "",
+                            filters: submittedCriteria?.filters ?? filters,
+                          })
+                      : undefined
+                  }
                 />
               ))}
             </div>

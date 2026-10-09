@@ -8,6 +8,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import type { Bg1PublicUserV1, TalentSearchResultV1 } from "@soundhub/types";
+import type { RequiredFiltersValue } from "./talent-search-request-builder.js";
 import {
   MATCHMAKER_FROM_TALENT_DIRECT,
   MATCHMAKER_FROM_TALENT_INTENT_RETURN,
@@ -39,6 +40,19 @@ const SAMPLE_RESULT = {
   matchReason: "matched offering title",
 } as unknown as TalentSearchResultV1;
 
+const EMPTY_FILTERS: RequiredFiltersValue = {
+  primaryCategoryKey: "",
+  independentlyPurchasableServiceKey: "",
+  serviceModes: [],
+  basedIn: { city: "", region: "", countryCode: "" },
+  serviceArea: { city: "", region: "", countryCode: "" },
+};
+
+const SAMPLE_CRITERIA = {
+  query: "Haitian producer in New York",
+  filters: EMPTY_FILTERS,
+};
+
 function buildUser(input: {
   readonly personal: boolean;
   readonly buyer: boolean;
@@ -65,11 +79,12 @@ function buildUser(input: {
 }
 
 describe("navigateToMatchmakerFromTalent (M2 #87)", () => {
-  test("anonymous user routes to /login?return=/matchmaker?from=talent", () => {
+  test("anonymous user routes through /login?return=/workspace/intent?return=/matchmaker (so brand-new users get Buyer intent provisioning first)", () => {
     const pushes: string[] = [];
     const setCalls: unknown[] = [];
     navigateToMatchmakerFromTalent({
       result: SAMPLE_RESULT,
+      criteria: SAMPLE_CRITERIA,
       user: null,
       actingWorkspace: null,
       actingWorkspaceId: null,
@@ -79,6 +94,7 @@ describe("navigateToMatchmakerFromTalent (M2 #87)", () => {
     assert.deepEqual(pushes, [MATCHMAKER_FROM_TALENT_LOGIN_RETURN]);
     assert.equal(setCalls.length, 1, "the localStorage record must be written before any push");
     assert.equal((setCalls[0] as { offeringId: string }).offeringId, "of-1");
+    assert.equal((setCalls[0] as { query: string }).query, "Haitian producer in New York");
   });
 
   test("signed-in user without Buyer routes to /workspace/intent?return=...", () => {
@@ -86,6 +102,7 @@ describe("navigateToMatchmakerFromTalent (M2 #87)", () => {
     const pushes: string[] = [];
     navigateToMatchmakerFromTalent({
       result: SAMPLE_RESULT,
+      criteria: SAMPLE_CRITERIA,
       user,
       actingWorkspace: user.workspaces[0]!,
       actingWorkspaceId: "ws-personal",
@@ -100,6 +117,7 @@ describe("navigateToMatchmakerFromTalent (M2 #87)", () => {
     const pushes: string[] = [];
     navigateToMatchmakerFromTalent({
       result: SAMPLE_RESULT,
+      criteria: SAMPLE_CRITERIA,
       user,
       actingWorkspace: user.workspaces[0]!,
       actingWorkspaceId: "ws-personal",
@@ -113,6 +131,7 @@ describe("navigateToMatchmakerFromTalent (M2 #87)", () => {
     const calls: string[] = [];
     navigateToMatchmakerFromTalent({
       result: SAMPLE_RESULT,
+      criteria: SAMPLE_CRITERIA,
       user: null,
       actingWorkspace: null,
       actingWorkspaceId: null,
@@ -122,5 +141,33 @@ describe("navigateToMatchmakerFromTalent (M2 #87)", () => {
       },
     });
     assert.deepEqual(calls, ["setContext", "push"]);
+  });
+
+  test("the criteria passed by the caller are stored verbatim (not replaced by empty values)", () => {
+    const setCalls: Array<{ query: string; filters: RequiredFiltersValue }> = [];
+    const richCriteria = {
+      query: "Trinidadian soca brass section",
+      filters: {
+        primaryCategoryKey: "music-production",
+        independentlyPurchasableServiceKey: "",
+        serviceModes: ["Remote" as const],
+        basedIn: { city: "", region: "", countryCode: "TT" },
+        serviceArea: { city: "", region: "", countryCode: "" },
+      },
+    };
+    navigateToMatchmakerFromTalent({
+      result: SAMPLE_RESULT,
+      criteria: richCriteria,
+      user: buildUser({ personal: true, buyer: true }),
+      actingWorkspace: null,
+      actingWorkspaceId: null,
+      router: { push: () => undefined },
+      setContext: (input) => setCalls.push({ query: input.query, filters: input.filters }),
+    });
+    assert.equal(setCalls.length, 1);
+    assert.equal(setCalls[0]!.query, "Trinidadian soca brass section");
+    assert.equal(setCalls[0]!.filters.primaryCategoryKey, "music-production");
+    assert.equal(setCalls[0]!.filters.basedIn.countryCode, "TT");
+    assert.deepEqual(setCalls[0]!.filters.serviceModes, ["Remote"]);
   });
 });

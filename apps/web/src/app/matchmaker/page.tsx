@@ -51,10 +51,26 @@ import {
 const DEFAULT_BRIEF =
   "I need a Brooklyn-based producer for a remote Haitian dancehall single, ideally delivered before March 14.";
 
+function deriveInitialBrief(record: TalentMatchmakerContext | null): string {
+  if (record === null) return DEFAULT_BRIEF;
+  if (record.query.trim().length > 0) return record.query;
+  // Recovered record has no query — fall back to the canonical
+  // brief so the form is still usable. The buyer can replace it.
+  return DEFAULT_BRIEF;
+}
+
 export default function MatchmakerPage() {
   const { user, loading, refresh } = useSession();
   const [actingWorkspaceId, setActingWorkspaceId] = useState<string>("");
-  const [briefText, setBriefText] = useState<string>(DEFAULT_BRIEF);
+  // M2 (#87): the brief form is initialized from the recovered
+  // Talent continuation record's query (lazy initializer — the
+  // record is read on every mount, not via the talentContext
+  // state below). The non-destructive read survives across the
+  // round-trip; the brief is restored so the buyer does not have
+  // to re-type it after onboarding.
+  const [briefText, setBriefText] = useState<string>(() =>
+    deriveInitialBrief(readTalentMatchmakerContext()),
+  );
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [response, setResponse] = useState<SubmitBriefResponseV1 | null>(null);
@@ -292,7 +308,19 @@ export default function MatchmakerPage() {
               briefId: response.brief.briefId,
               recommendation,
               setError: setInviteError,
-              setSuccess: setInviteSuccess,
+              setSuccess: (message) => {
+                setInviteSuccess(message);
+                // M2 (#87): a successful Send project request is
+                // the terminal boundary that clears the Talent
+                // continuation record. The record is only cleared
+                // on success — a failure leaves the record in
+                // place so the buyer can retry without a new
+                // /talent round-trip. The same pattern protects
+                // the Back to talent link from reappearing after
+                // the buyer has already sent a request.
+                clearTalentMatchmakerContext();
+                setTalentContext(null);
+              },
               setSubmitting: (value) => {
                 setInvitingRecommendationId(
                   value ? recommendation.bestMatchingOffering.offeringId : null,

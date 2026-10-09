@@ -17,32 +17,75 @@
 // "Send project request" click. The handler writes the Talent
 // continuation record to localStorage (the bounded cross-flow
 // state container) and routes the buyer to the matchmaker.
-// Anonymous buyers go through `/login?return=/matchmaker?from=talent`;
-// signed-in no-Buyer buyers go through `/workspace/intent?return=...`;
-// signed-in Buyer-capable buyers go directly.
+// Anonymous buyers go through a chained return context
+// `/login?return=/workspace/intent?return=/matchmaker` so a
+// brand-new user is provisioned with Buyer capability before
+// the matchmaker mounts; signed-in no-Buyer buyers go through
+// `/workspace/intent?return=/matchmaker`; signed-in
+// Buyer-capable buyers go directly.
+//
+// localStorage write failures (private-browsing quota, full
+// storage) are caught at the page level and surfaced as an
+// inline recoverable error so the buyer is never sent to a
+// destination they cannot resume from.
 
+import { useState } from "react";
 import { SearchPage } from "../components/SearchPage";
 import { navigateToMatchmakerFromTalent } from "../lib/navigate-to-matchmaker-from-talent";
 import { useSession } from "../components/SessionProvider";
 import { useActingWorkspace } from "../components/SessionProvider";
 import { useRouter } from "next/navigation";
+import { Card } from "../components/ui/Card";
 
 export default function TalentPage() {
   const { user } = useSession();
   const { actingWorkspaceId, actingWorkspace } = useActingWorkspace();
   const router = useRouter();
+  // M2 (#87): localStorage write failures (private-browsing
+  // quota) are surfaced inline. The Talent page is the only
+  // place that catches the throw from setTalentMatchmakerContext
+  // — the helper itself propagates so the page owns the
+  // buyer-visible recovery.
+  const [talentContextError, setTalentContextError] = useState<string | null>(null);
 
   return (
-    <SearchPage
-      onSendProjectRequest={(result) => {
-        navigateToMatchmakerFromTalent({
-          result,
-          user,
-          actingWorkspace,
-          actingWorkspaceId,
-          router,
-        });
-      }}
-    />
+    <>
+      {talentContextError !== null && (
+        <div
+          className="max-w-3xl mx-auto px-6 pt-6"
+          data-testid="talent-context-storage-error"
+          role="alert"
+        >
+          <Card variant="outlined" className="border-amber-200 bg-amber-50">
+            <Card.Content>
+              <p className="text-sm text-amber-800">
+                {talentContextError} The brief is preserved. You can retry without retyping it.
+              </p>
+            </Card.Content>
+          </Card>
+        </div>
+      )}
+      <SearchPage
+        onSendProjectRequest={(result, criteria) => {
+          try {
+            navigateToMatchmakerFromTalent({
+              result,
+              criteria,
+              user,
+              actingWorkspace,
+              actingWorkspaceId,
+              router,
+            });
+            setTalentContextError(null);
+          } catch (err) {
+            setTalentContextError(
+              err instanceof Error
+                ? err.message
+                : "We couldn't save your selection to continue. Your browser storage may be full or disabled.",
+            );
+          }
+        }}
+      />
+    </>
   );
 }
