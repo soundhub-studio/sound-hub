@@ -42,6 +42,11 @@ import { submitBriefFromForm } from "./submit-brief-from-form";
 import { inviteFromRecommendation } from "./invite-from-recommendation";
 import { BriefSummary } from "./brief-summary";
 import { Card } from "../components/ui/Card";
+import {
+  type TalentMatchmakerContext,
+  clearTalentMatchmakerContext,
+  readTalentMatchmakerContext,
+} from "../lib/talent-matchmaker-context";
 
 const DEFAULT_BRIEF =
   "I need a Brooklyn-based producer for a remote Haitian dancehall single, ideally delivered before March 14.";
@@ -66,6 +71,18 @@ export default function MatchmakerPage() {
   // independently deployable list of category keys. PostgreSQL is
   // the source of truth (Codex P2-001).
   const [categories, setCategories] = useState<readonly CategoryMetadataItemV1[]>([]);
+
+  // M2 (#87): the Talent continuation record (localStorage) is the
+  // single source of truth for the cross-flow state. The matchmaker
+  // reads it on every mount (regardless of the URL marker) so the
+  // highlight survives the post-command return resolver's query
+  // stripping. The read is non-destructive: the record is only
+  // cleared on a terminal boundary (explicit Back to talent,
+  // successful Send project request, or an expired/corrupt record).
+  const [talentContext, setTalentContext] = useState<TalentMatchmakerContext | null>(null);
+  useEffect(() => {
+    setTalentContext(readTalentMatchmakerContext());
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -113,11 +130,11 @@ export default function MatchmakerPage() {
             <p className="text-gray-700">
               You are not signed in.{" "}
               <Link
-                href="/login"
-                className="text-blue-600 hover:text-blue-700 font-medium"
+                href="/login?return=/matchmaker?from=talent"
+                className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] px-4 py-2 rounded-md bg-coral text-white text-sm font-semibold hover:bg-coral-hover transition-colors"
                 data-testid="matchmaker-sign-in-link"
               >
-                Sign in
+                Sign in to continue
               </Link>{" "}
               to submit a ProjectBrief.
             </p>
@@ -155,6 +172,22 @@ export default function MatchmakerPage() {
 
   return (
     <div className="max-w-3xl mx-auto px-6 py-12 space-y-6" data-testid="matchmaker-page">
+      {talentContext !== null && (
+        <div className="flex justify-start">
+          <Link
+            href="/talent"
+            data-testid="matchmaker-back-to-talent"
+            className="text-sm font-medium text-aubergine hover:text-aubergine-hover underline focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-aubergine rounded"
+            onClick={() => {
+              // Back to talent is a terminal boundary that
+              // explicitly clears the continuation record.
+              clearTalentMatchmakerContext();
+            }}
+          >
+            ← Back to talent
+          </Link>
+        </div>
+      )}
       <Card data-testid="matchmaker-brief-card">
         <Card.Header>
           <Card.Title>Submit a ProjectBrief</Card.Title>
@@ -251,6 +284,7 @@ export default function MatchmakerPage() {
           invitingRecommendationId={invitingRecommendationId}
           inviteError={inviteError}
           inviteSuccess={inviteSuccess}
+          highlightedOfferingId={talentContext?.offeringId ?? null}
           onInvite={(recommendation) => {
             setInvitingRecommendationId(recommendation.bestMatchingOffering.offeringId);
             void inviteFromRecommendation({
@@ -283,6 +317,7 @@ function BriefResults({
   inviteError,
   inviteSuccess,
   onInvite,
+  highlightedOfferingId,
 }: {
   readonly response: SubmitBriefResponseV1;
   readonly categories: readonly CategoryMetadataItemV1[];
@@ -291,6 +326,7 @@ function BriefResults({
   readonly inviteError: string | null;
   readonly inviteSuccess: string | null;
   readonly onInvite: (recommendation: MatchmakerRecommendationV1) => void;
+  readonly highlightedOfferingId: string | null;
 }) {
   return (
     <>
@@ -352,6 +388,7 @@ function BriefResults({
                   disabled={!actingWorkspaceId || invitingRecommendationId !== null}
                   submitting={invitingRecommendationId === rec.bestMatchingOffering.offeringId}
                   onInvite={() => onInvite(rec)}
+                  highlightedOfferingId={highlightedOfferingId}
                 />
               ))}
             </ul>
@@ -368,12 +405,14 @@ function RecommendationItem({
   disabled,
   submitting,
   onInvite,
+  highlightedOfferingId,
 }: {
   readonly recommendation: MatchmakerRecommendationV1;
   readonly index: number;
   readonly disabled: boolean;
   readonly submitting: boolean;
   readonly onInvite: () => void;
+  readonly highlightedOfferingId: string | null;
 }) {
   // BG7 inline audio preview. The buyer can click "▶ Preview
   // sample" to fetch the bounded audio samples for this offering
@@ -416,6 +455,14 @@ function RecommendationItem({
       data-testid="matchmaker-recommendation-item"
       data-recommendation-index={index}
       data-recommendation-id={recommendation.bestMatchingOffering.offeringId}
+      data-matchmaker-highlighted={
+        highlightedOfferingId === recommendation.bestMatchingOffering.offeringId ? "true" : "false"
+      }
+      aria-current={
+        highlightedOfferingId === recommendation.bestMatchingOffering.offeringId
+          ? "true"
+          : undefined
+      }
     >
       <div>
         <p className="text-sm font-medium text-gray-900">
@@ -508,11 +555,11 @@ function RecommendationItem({
           type="button"
           onClick={onInvite}
           disabled={disabled || submitting}
-          className="bg-blue-600 text-white px-3 py-1.5 rounded-md text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
-          data-testid="matchmaker-invite-button"
+          className="bg-coral text-white px-3 py-1.5 rounded-md text-sm font-semibold hover:bg-coral-hover disabled:opacity-50 transition-colors"
+          data-testid="matchmaker-send-project-request"
           data-offering-id={recommendation.bestMatchingOffering.offeringId}
         >
-          {submitting ? "Inviting…" : "Select & invite"}
+          {submitting ? "Inviting…" : "Send project request"}
         </button>
       </div>
     </li>

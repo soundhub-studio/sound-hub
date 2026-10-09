@@ -1895,6 +1895,15 @@ export const postCommandRouteValuesV1 = [
   // resume the editor under a stale Buyer actor.
   "/seller/profile/edit",
   "/seller/profile/review",
+  // M2 (#87): Matchmaker. The route is open (no capability gate) so
+  // anonymous discovery on /talent can route through /login →
+  // /matchmaker without requiring Buyer capability on the return
+  // destination. The substantive buyer-flow state (which offering to
+  // highlight, which brief/filter to pre-fill) rides in a localStorage
+  // record keyed by the seller-profile-pending-edits seam pattern;
+  // the URL marker `?from=talent` is a routing hint, not a contract
+  // surface, and may be stripped by the bounded return resolver.
+  "/matchmaker",
 ] as const;
 export type PostCommandRouteV1 = (typeof postCommandRouteValuesV1)[number];
 

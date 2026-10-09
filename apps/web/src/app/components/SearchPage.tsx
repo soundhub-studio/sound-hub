@@ -84,9 +84,22 @@ import {
   categoryMetadataResponseV1Schema,
   type ApiFieldErrorV1,
   type CategoryMetadataItemV1,
+  type TalentSearchResultV1,
 } from "@soundhub/types";
 
-export function SearchPage() {
+export interface SearchPageProps {
+  /**
+   * M2 (#87): buyer-side action handler wired by the talent page.
+   * The default (no prop) renders the result card with the coral
+   * Send project request button disabled. The /talent page provides
+   * a `navigateToMatchmakerFromTalent` default that writes the
+   * Talent continuation record and routes to the matchmaker (or
+   * the protected-action login / intent flow).
+   */
+  readonly onSendProjectRequest?: (result: TalentSearchResultV1) => void;
+}
+
+export function SearchPage({ onSendProjectRequest }: SearchPageProps = {}) {
   const [query, setQuery] = useState("");
   const [filters, setFilters] = useState<RequiredFiltersValue>({
     primaryCategoryKey: "",
@@ -432,7 +445,11 @@ export function SearchPage() {
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
               {results.results.map((result) => (
-                <ResultCard key={result.seller.sellerId} result={result} />
+                <ResultCard
+                  key={result.seller.sellerId}
+                  result={result}
+                  onSendProjectRequest={onSendProjectRequest}
+                />
               ))}
             </div>
           </section>

@@ -41,12 +41,26 @@
 // verbatim so the existing e2e and behavioral tests continue to assert
 // against the same identifiers.
 
+import { useState } from "react";
 import type { TalentSearchResultV1 } from "@soundhub/types";
 import { AudioSamplesPanel } from "./AudioSamplesPanel";
 import { formatPricing } from "../lib/pricing";
 
 export interface ResultCardProps {
   readonly result: TalentSearchResultV1;
+  /**
+   * M2 (#87): buyer-side action handler. When the buyer clicks the
+   * coral "Send project request" button on the result, the page
+   * wires this to `navigateToMatchmakerFromTalent`. When `undefined`
+   * (e.g. a non-wired test render), the button is rendered disabled
+   * with `aria-disabled="true"` and a `title` hint. The disabled
+   * state is the regression gate: a regression that wires the
+   * button to a non-protected command (e.g. a direct
+   * `createProjectRequest` call) MUST be caught by the test
+   * "Send project request is disabled when the callback is
+   * undefined" below.
+   */
+  readonly onSendProjectRequest?: (result: TalentSearchResultV1) => void;
 }
 
 type OfferingDetailVariant = "lead" | "additional";
@@ -71,7 +85,7 @@ const OFFERING_DETAIL_STYLES: Record<
   },
 };
 
-export function ResultCard({ result }: ResultCardProps) {
+export function ResultCard({ result, onSendProjectRequest }: ResultCardProps) {
   const {
     seller,
     bestMatchingOffering,
@@ -82,6 +96,16 @@ export function ResultCard({ result }: ResultCardProps) {
   } = result;
 
   const avatarInitials = initialsFrom(seller.professionalName);
+
+  // M2 (#87): "View service details" inline expansion. The local
+  // `useState` is the only state this affordance needs — a
+  // regression that introduces a new public-directory route would
+  // re-introduce the surface the existing test at lines 88–95
+  // explicitly forbids. The button toggles a panel with the full
+  // description, all `includedServices`, and the additional-offering
+  // disclosure body; it is NOT a link.
+  const [detailsOpen, setDetailsOpen] = useState<boolean>(false);
+  const detailsPanelId = `result-view-service-details-panel-${result.seller.sellerId}`;
 
   return (
     <article
@@ -240,6 +264,107 @@ export function ResultCard({ result }: ResultCardProps) {
             >
               {formatRequiredOnlyFit(matchReason)}
             </p>
+          </div>
+        )}
+
+        {/* M2 (#87): buyer-side action surface. The coral
+            "Send project request" is the primary marketplace
+            progression action (matches the spec's "coral =
+            marketplace progression only"). The neutral "View
+            service details" button toggles an inline expansion
+            panel — it is NOT a link and the existing test at
+            ResultCard.test.ts:88-95 forbids any href. The
+            expansion panel renders the full description and all
+            `includedServices` inline. */}
+        <div
+          className="mt-1 pt-3 border-t border-borderWarm flex flex-col gap-2"
+          data-testid="result-actions"
+        >
+          <button
+            type="button"
+            onClick={() => {
+              if (onSendProjectRequest) {
+                onSendProjectRequest(result);
+              }
+            }}
+            disabled={!onSendProjectRequest}
+            aria-disabled={!onSendProjectRequest}
+            title={
+              onSendProjectRequest
+                ? "Send a project request to this seller"
+                : "Sign in to send a project request"
+            }
+            className="inline-flex items-center justify-center min-h-[44px] px-4 py-2 rounded-md bg-coral text-white text-sm font-semibold hover:bg-coral-hover disabled:opacity-60 disabled:cursor-not-allowed transition-colors focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-coral"
+            data-testid="result-send-project-request"
+          >
+            Send project request
+          </button>
+          <button
+            type="button"
+            onClick={() => setDetailsOpen((open) => !open)}
+            aria-expanded={detailsOpen}
+            aria-controls={detailsPanelId}
+            className="inline-flex items-center justify-center min-h-[44px] px-4 py-2 rounded-md border border-borderWarm bg-canvas text-ink text-sm font-medium hover:bg-surface focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-aubergine transition-colors"
+            data-testid="result-view-service-details"
+          >
+            {detailsOpen ? "Hide service details" : "View service details"}
+          </button>
+        </div>
+        {detailsOpen && (
+          <div
+            id={detailsPanelId}
+            className="bg-canvas border border-borderWarm rounded-lg p-3 flex flex-col gap-2"
+            data-testid="result-view-service-details-panel"
+          >
+            {bestMatchingOffering.description.length > 0 && (
+              <p className="text-sm text-ink leading-relaxed">{bestMatchingOffering.description}</p>
+            )}
+            {bestMatchingOffering.includedServices.length > 0 && (
+              <p
+                className="text-xs text-muted"
+                data-testid="result-view-service-details-included-services"
+              >
+                <span className="font-medium text-aubergine">Bundle includes: </span>
+                {bestMatchingOffering.includedServices
+                  .map((included) => `${included.name} (bundle only)`)
+                  .join(", ")}
+              </p>
+            )}
+            {bestMatchingOffering.serviceAreas.length > 0 && (
+              <p className="text-xs text-muted">
+                <span className="font-medium text-aubergine">Service area: </span>
+                {bestMatchingOffering.serviceAreas.map(formatLocation).join(" · ")}
+              </p>
+            )}
+            {bestMatchingOffering.genreTags.length > 0 && (
+              <p className="text-xs text-muted">
+                <span className="font-medium text-aubergine">Genres: </span>
+                {bestMatchingOffering.genreTags.join(", ")}
+              </p>
+            )}
+            {additionalMatchingOfferings.length > 0 && (
+              <div data-testid="result-additional-offerings-body" className="pt-2">
+                <p className="text-xs uppercase tracking-wider text-muted font-semibold mb-1">
+                  Also available from this seller
+                </p>
+                <ul className="space-y-2">
+                  {additionalMatchingOfferings.map((offering) => (
+                    <li
+                      key={offering.offeringId}
+                      data-testid="result-additional-offering"
+                      data-offering-id={offering.offeringId}
+                      className="text-xs text-muted"
+                    >
+                      <span className="font-medium text-ink">{offering.title}</span>
+                      <span className="ml-1">
+                        ({offering.primaryCategory.name} · {formatServiceMode(offering.serviceMode)}
+                        )
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
         )}
       </div>
