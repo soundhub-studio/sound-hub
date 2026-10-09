@@ -470,4 +470,27 @@ describe("Shell — capability-truthful destinations (§4 / P1-005 / P1-004)", (
       "Shell MUST expose Deals when Buyer OR Seller capability is present",
     );
   });
+
+  test("Finding 8 — Buyer-only branch exposes a Continue link when validatedReturnTo is set", () => {
+    const source = readFile("workspace/intent/page.tsx");
+    // The skip-to-return link MUST be rendered inside the
+    // non-hasBoth branch when the user already has a capability
+    // (Buyer-only or Seller-only) AND validatedReturnTo is set.
+    // The previous Finding 6 fix only handled the hasBoth case;
+    // this new test pins the Buyer-only / Seller-only path so a
+    // returning Buyer account can continue to /matchmaker without
+    // being forced to add unrelated Seller capability.
+    assert.ok(
+      /validatedReturnTo !== null && currentCapabilities\.length > 0/.test(source),
+      "intent page MUST expose a continue-without-changing link when validatedReturnTo is set and the user already has at least one capability",
+    );
+    assert.ok(
+      /data-testid="intent-skip-to-return"/.test(source),
+      "intent page MUST render the skip-to-return link with a stable testid for buyer-flow e2e coverage",
+    );
+    assert.ok(
+      /href=\{validatedReturnTo\}/.test(source),
+      "skip-to-return link MUST use the validatedReturnTo href so the buyer-flow continuation is honored",
+    );
+  });
 });

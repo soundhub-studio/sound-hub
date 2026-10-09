@@ -379,6 +379,16 @@ function IntentPageInner() {
                     : "Choose how you want to use SoundHub. You can add the other capability later from the dashboard."}
               </p>
 
+              {validatedReturnTo !== null && currentCapabilities.length > 0 && (
+                <a
+                  href={validatedReturnTo}
+                  className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] mb-4 py-2 px-4 text-sm font-medium text-aubergine hover:text-aubergine-hover border border-aubergine rounded focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-aubergine"
+                  data-testid="intent-skip-to-return"
+                >
+                  Continue without changing capabilities
+                </a>
+              )}
+
               <form onSubmit={handleSubmit} className="space-y-4" data-testid="intent-form">
                 <fieldset disabled={submitting} className="space-y-3" data-testid="intent-fieldset">
                   <legend className="sr-only">Marketplace intent</legend>
