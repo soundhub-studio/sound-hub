@@ -765,21 +765,30 @@ describe("BriefSummary presentation coverage", () => {
 // ---------- Source-pattern contract tests ----------
 
 describe("BG3 Matchmaker page source contract", () => {
-  test("DEFAULT_BRIEF preserves the shipped Brooklyn-based phrasing (GS 14)", () => {
-    // The buyer UI ships this exact brief text; the deterministic
-    // adapter must recognise "Brooklyn-based" so the required
-    // location survives interpretation. If a refactor changes the
-    // phrasing, the deterministic adapter's LOCATION_PHRASES
-    // table must keep up.
+  test("M2 (#87) 5th review — page no longer ships a sample DEFAULT_BRIEF (Finding 2 — truthful brief)", () => {
+    // M2 (#87) 5th review: the matchmaker MUST derive the brief
+    // text from the saved query + structured criteria. The
+    // previous DEFAULT_BRIEF sample copy ("I need a Brooklyn-
+    // based producer...") was a spec violation: it invented
+    // requirements the buyer never expressed. The page now
+    // composes a brief from the recovered record via
+    // `deriveTruthfulBrief` instead of falling back to a sample
+    // string. The Brooklyn-based wording still survives inside
+    // the deterministic adapter's LOCATION_PHRASES table (the
+    // adapter's vocabulary), but the matchmaker page must NOT
+    // pre-fill a buyer-visible brief with invented copy.
     const source = readMatchmakerPage();
-    assert.match(
-      source,
-      /DEFAULT_BRIEF\s*=\s*"I need a Brooklyn-based producer[^"]*"/,
-      "DEFAULT_BRIEF must use Brooklyn-based phrasing so the deterministic adapter preserves the required location",
+    assert.ok(
+      !/DEFAULT_BRIEF\s*=/.test(source),
+      "matchmaker page MUST NOT export a sample DEFAULT_BRIEF constant (Finding 2 — truthful brief from saved query + criteria)",
+    );
+    assert.ok(
+      !/I need a Brooklyn-based producer/i.test(source),
+      "matchmaker page MUST NOT contain the invented Brooklyn-based producer sample copy (Finding 2)",
     );
   });
 
-  test("buyer submission delegates to the test seam and forwards actingWorkspaceId + briefText", () => {
+  test("buyer submission delegates to the test seam and forwards actingWorkspaceId + briefText + required", () => {
     const source = readMatchmakerPage();
     // The page MUST route the form submit through the test seam
     // so the runtime UI test can exercise the full payload +
@@ -790,10 +799,20 @@ describe("BG3 Matchmaker page source contract", () => {
       /await submitBriefFromForm\(\{/,
       "buyer page must delegate to submitBriefFromForm test seam",
     );
+    // M2 (#87) Finding 8: the page MUST forward the buyer's
+    // M1 strict required filters to the brief submission so the
+    // API applies them verbatim (the AI never relaxes a
+    // buyer-supplied hard axis). The forward may use a
+    // conditional spread; the regex tolerates either ordering.
     assert.match(
       source,
-      /actingWorkspaceId,\s*briefText,\s*setError,\s*setResponse,\s*setSubmitting/,
-      "buyer page must forward all five state setters + the form fields",
+      /required\s*[:?]/,
+      "buyer page must forward the buyer-supplied `required` M1 strict criteria to the brief submission",
+    );
+    assert.match(
+      source,
+      /setError,\s*setResponse,\s*setSubmitting/,
+      "buyer page must forward the three state setters",
     );
   });
 
@@ -900,10 +919,386 @@ describe("BG3 Matchmaker page source contract", () => {
       /data-testid="matchmaker-explanation-item"/,
       "buyer page must render each explanation entry from the validated DTO",
     );
+    // M2 (#87) 7th review Finding 2: the rendered row drives
+    // its explanations off `targetEvidence.explanations` (which
+    // equals `recommendation.explanations` when no additional-
+    // offering promotion is in play). Either name drives the
+    // list off the validated DTO — no generated string.
     assert.match(
       source,
-      /recommendation\.explanations\.map\(/,
-      "buyer page must drive the explanations list off the DTO, not a generated string",
+      /targetEvidence\.explanations\.map/,
+      "buyer page must drive the explanations list off the validated DTO (via targetEvidence.explanations)",
+    );
+  });
+});
+
+describe("M2 (#87) Matchmaker page — Talent continuation contract", () => {
+  test("brief is initialized from the recovered Talent continuation record (Finding 3 — pre-fill restored brief)", () => {
+    // M2 (#87) acceptance criterion #11: brief/filter state is
+    // preserved across the auth/intent round-trip. The matchmaker
+    // MUST initialize briefText from the recovered query so the
+    // buyer does not have to re-type the brief they composed on
+    // /talent after onboarding. M2 (#87) 5th review: the brief
+    // MUST be derived truthfully from the saved query +
+    // structured criteria; the page MUST NOT fall back to an
+    // invented DEFAULT_BRIEF.
+    const source = readMatchmakerPage();
+    assert.match(
+      source,
+      /deriveTruthfulBrief\(readTalentMatchmakerContext\(\)\)/,
+      "Matchmaker page MUST initialize briefText via deriveTruthfulBrief(readTalentMatchmakerContext())",
+    );
+    assert.match(
+      source,
+      /function deriveTruthfulBrief\(record: TalentMatchmakerContext \| null\)/,
+      "deriveTruthfulBrief must accept the recovered record shape",
+    );
+    // The 5th review: a 2–7 character query must not fail
+    // Matchmaker validation, and filter-only searches must not
+    // fall back to unrelated DEFAULT_BRIEF content. The page
+    // composes a brief from the saved query + structured
+    // criteria instead of inventing a sample brief.
+    assert.ok(
+      !/I need a Brooklyn-based producer/i.test(source),
+      "Matchmaker page MUST NOT contain the invented DEFAULT_BRIEF sample copy (Finding 2 — truthful brief from saved query + criteria)",
+    );
+    assert.match(
+      source,
+      /composeBriefFromCriteria/,
+      "Matchmaker page MUST compose a brief from the saved structured criteria when the recovered query is empty (Finding 2 — filter-only path)",
+    );
+  });
+
+  test("Talent continuation is cleared on Send project request SUCCESS only (Finding 4 — no clear on failure)", () => {
+    // M2 (#87) acceptance criterion: a successful Send project
+    // request is the terminal boundary that clears the Talent
+    // continuation record. A failure MUST leave the record in
+    // place so the buyer can retry without a new /talent round-
+    // trip. A regression that clears on every completion (success
+    // or failure) would make the Back to talent link reappear
+    // and the highlight survive a request the buyer did not
+    // actually send.
+    const source = readMatchmakerPage();
+    // The clear call MUST live inside the setSuccess callback,
+    // NOT inside setSubmitting. We assert by counting clear calls
+    // and verifying the one that exists lives next to setSuccess.
+    const submitClearCall = /setSubmitting[^}]+clearTalentMatchmakerContext\(\)/.test(source);
+    assert.equal(
+      submitClearCall,
+      false,
+      "Talent continuation MUST NOT be cleared inside the setSubmitting callback (would clear on every completion, including failures)",
+    );
+    const successClearCall = /setSuccess:[^,]+=>\s*\{[^}]*clearTalentMatchmakerContext\(\);/m.test(
+      source,
+    );
+    assert.ok(
+      successClearCall,
+      "Talent continuation MUST be cleared inside the setSuccess callback so a successful Send project request is the terminal boundary",
+    );
+  });
+
+  // M2 (#87) P1 — Codex 4th review Finding 11. The matchmaker's
+  // signed-out card carried a "Sign in to continue" CTA whose
+  // href was `/login?return=/matchmaker?from=talent`. A brand-new
+  // sign-in then lands on /matchmaker with no Buyer capability
+  // and hits the no-Buyer dead-end. The CTA must route through
+  // /workspace/intent first so a new user is provisioned with
+  // Buyer capability (or can use the Buyer-only skip link) before
+  // reaching /matchmaker.
+  test("signed-out Sign-in CTA chains through /workspace/intent to provision Buyer capability (Finding 11)", () => {
+    const source = readMatchmakerPage();
+    // The chained return MUST be exactly the one the talent page
+    // uses (single source of truth for the cross-flow routing).
+    assert.match(
+      source,
+      /\/login\?return=\/workspace\/intent\?return=\/matchmaker/,
+      "matchmaker signed-out CTA MUST route through /workspace/intent before reaching /matchmaker (chain return so a brand-new account is provisioned with Buyer capability)",
+    );
+    // A regression that re-introduces the direct
+    // /login?return=/matchmaker href (no chain) fails this assertion.
+    assert.ok(
+      !/href="\/login\?return=\/matchmaker\?from=talent"/.test(source),
+      "matchmaker signed-out CTA MUST NOT use the direct /login?return=/matchmaker href (would land a brand-new account on the no-Buyer dead-end)",
+    );
+  });
+
+  // M2 (#87) Finding 8 — apply recovered strict filters to
+  // Matchmaker. The matchmaker brief form MUST keep M1 strict
+  // required filters available through progressive disclosure
+  // and MUST pre-fill them from the recovered Talent continuation
+  // record. The brief submission MUST forward them to the API
+  // verbatim so the AI never relaxes a buyer-supplied hard
+  // axis. This is the spec acceptance criterion that the
+  // /talent → /matchmaker round-trip does not lose the buyer's
+  // structured search constraints (including a filter-only
+  // search).
+  test("Finding 8 — matchmaker renders M1 strict filters via progressive disclosure and pre-fills from the recovered record", () => {
+    const source = readMatchmakerPage();
+    // The matchmaker MUST render the same `RequiredFilters`
+    // component used on /talent so the M1 contract (progressive
+    // disclosure of structured required filters) is honored.
+    assert.match(
+      source,
+      /import\s*\{[^}]*RequiredFilters[^}]*\}\s*from\s*["']\.\.\/components\/RequiredFilters["']/,
+      "matchmaker page MUST import the RequiredFilters component to keep M1 strict required filters available through progressive disclosure",
+    );
+    assert.match(
+      source,
+      /<RequiredFilters/,
+      "matchmaker page MUST render the RequiredFilters component (the M1 strict filter surface)",
+    );
+    // The page MUST pre-fill the filters from the recovered
+    // Talent continuation record (lazy initializer — same shape
+    // as the brief pre-fill).
+    assert.match(
+      source,
+      /deriveInitialFilters\(readTalentMatchmakerContext\(\)\)/,
+      "matchmaker page MUST pre-fill the strict required filters from the recovered Talent continuation record (Finding 8)",
+    );
+    // The page MUST forward the strict required filters to the
+    // brief submission so the API applies them verbatim.
+    assert.match(
+      source,
+      /buildRequiredCriteriaPayload\(requiredFilters\)/,
+      "matchmaker page MUST convert the form's RequiredFiltersValue into a TalentSearchRequiredCriteriaV1 payload before submitting the brief (Finding 8)",
+    );
+    // The page MUST force the disclosure open when the
+    // recovered record carries any pre-filled filter value so
+    // the buyer can see the recovered state on first paint.
+    assert.match(
+      source,
+      /forceOpen=\{forceFiltersOpen\}/,
+      "matchmaker page MUST force the FiltersDisclosure open when the recovered record carries pre-filled filter values (Finding 8)",
+    );
+  });
+
+  // M2 (#87) 5th review Finding 2: the brief is derived from the
+  // saved query + structured criteria (truthful), and a 2–7 char
+  // query does not fail Matchmaker's briefText schema (≥ 8 chars
+  // after normalization). The page MUST NOT contain the
+  // invented DEFAULT_BRIEF copy ("I need a Brooklyn-based
+  // producer...") — that was a real spec violation pinned by
+  // Codex 5th review.
+  test("Finding 2 — brief is derived from saved query + structured criteria, not invented (5th review)", () => {
+    const source = readMatchmakerPage();
+    // The page MUST derive the brief from query + criteria.
+    assert.match(
+      source,
+      /deriveTruthfulBrief\(readTalentMatchmakerContext\(\)\)/,
+      "matchmaker page MUST initialize briefText via deriveTruthfulBrief (query + criteria, not invented copy)",
+    );
+    // The page MUST compose a brief from the structured criteria
+    // when the recovered query is empty (filter-only search).
+    assert.match(
+      source,
+      /composeBriefFromCriteria/,
+      "matchmaker page MUST compose a brief from the saved structured criteria when the query is empty (filter-only path)",
+    );
+    // The page MUST NOT contain the invented DEFAULT_BRIEF.
+    assert.ok(
+      !/I need a Brooklyn-based producer/i.test(source),
+      "matchmaker page MUST NOT contain the invented DEFAULT_BRIEF sample copy (Finding 2 — truthful brief)",
+    );
+  });
+
+  // M2 (#87) 7th review Finding 1: every valid Talent
+  // continuation must initialize the Matchmaker brief with a
+  // truthful, schema-valid brief of at least the required
+  // minimum length (8 chars). A sole short criterion (e.g.
+  // primary category "mixing" or service mode "Remote") would
+  // otherwise produce a 6-char brief that fails the briefText
+  // schema. The page MUST use a prepositional form for single
+  // short parts so the joined text is ≥ 8 chars without
+  // inventing buyer requirements.
+  test("Finding 1 (7th review) — sole short criterion produces a prepositional form ≥ 8 chars", () => {
+    const source = readMatchmakerPage();
+    // The page MUST handle the "single part < 8 chars" case via
+    // a prepositional form. The form uses the saved criterion
+    // verbatim — no invented content like project names, dates,
+    // or unrelated sample copy.
+    assert.match(
+      source,
+      /in \$\{part\}/,
+      "matchmaker page MUST use `in ${part}` prepositional form for a sole short primary category (Finding 1)",
+    );
+    assert.match(
+      source,
+      /as \$\{part\}/,
+      "matchmaker page MUST use `as ${part}` prepositional form for a sole short service mode (Finding 1)",
+    );
+    // The page MUST short-circuit when the joined text is
+    // already ≥ 8 chars (no prepositional form needed for
+    // service-area-only or based-in-only or long category).
+    assert.match(
+      source,
+      /if \(part\.length >= 8\) return part/,
+      "matchmaker page MUST return the joined text as-is when it is already ≥ 8 chars (Finding 1 — no prepositional padding for long criteria)",
+    );
+  });
+
+  // M2 (#87) 7th review Finding 2: when the saved offering is
+  // promoted from `additionalMatchingOfferings`, the row's
+  // explanations + match reason MUST describe the promoted
+  // offering — not the row's best matching offering.
+  test("Finding 2 (7th review) — promoted-offering evidence is re-derived from the target's own fields", () => {
+    const source = readMatchmakerPage();
+    // The page MUST import selectTargetEvidence.
+    assert.match(
+      source,
+      /import[\s\S]*?findSavedOfferingId[\s\S]*?selectTargetEvidence[\s\S]*?selectTargetOffering[\s\S]*?from\s*["']\.\/find-saved-offering-id["']/,
+      "matchmaker page MUST import selectTargetEvidence (Finding 2 — promoted-offering evidence)",
+    );
+    // The page MUST accept a `targetEvidence: TargetEvidence`
+    // prop on `RecommendationItem`.
+    assert.match(
+      source,
+      /targetEvidence:\s*TargetEvidence/,
+      "RecommendationItem MUST accept a targetEvidence: TargetEvidence prop (Finding 2 — promoted-offering evidence)",
+    );
+    // The page MUST use `targetEvidence.explanations` and
+    // `targetEvidence.matchReason` for the rendered row, NOT
+    // `recommendation.explanations` / `recommendation.matchReason`
+    // (which are bound to the best matching offering).
+    assert.match(
+      source,
+      /targetEvidence\.explanations\.map/,
+      "RecommendationItem MUST render targetEvidence.explanations (Finding 2 — promoted-offering evidence)",
+    );
+    assert.match(
+      source,
+      /\{targetEvidence\.matchReason\}/,
+      "RecommendationItem MUST render targetEvidence.matchReason (Finding 2 — promoted-offering evidence)",
+    );
+    // A regression that re-introduces the recommendation's
+    // own explanations / matchReason in the rendered row fails
+    // these next two assertions.
+    assert.ok(
+      !/recommendation\.explanations\.map\(/.test(source),
+      "RecommendationItem MUST NOT render recommendation.explanations.map (the recommendation's explanations describe the best matching offering, not the target)",
+    );
+    assert.ok(
+      !/\{recommendation\.matchReason\}/.test(source),
+      "RecommendationItem MUST NOT render {recommendation.matchReason} (the recommendation's matchReason describes the best matching offering, not the target)",
+    );
+  });
+
+  // M2 (#87) 5th review Finding 3: the saved offeringId is
+  // located in either `bestMatchingOffering` or
+  // `additionalMatchingOfferings` and is the one used by Send
+  // project request. The page imports the helper from a
+  // dedicated module (the helper cannot be a page-module
+  // export — Next.js enforces a strict default + route-only
+  // export surface).
+  test("Finding 3 — saved offeringId is located across both best and additional offerings (5th review)", () => {
+    const source = readMatchmakerPage();
+    // The page MUST import the helper from its own module.
+    assert.match(
+      source,
+      /import[\s\S]*?findSavedOfferingId[\s\S]*?selectTargetEvidence[\s\S]*?selectTargetOffering[\s\S]*?from\s*["']\.\/find-saved-offering-id["']/,
+      "matchmaker page MUST import findSavedOfferingId, selectTargetEvidence, and selectTargetOffering from ./find-saved-offering-id (the helpers cannot be page-module exports)",
+    );
+    // The page MUST use the helper to drive the highlight.
+    assert.match(
+      source,
+      /findSavedOfferingId\(recommendation,\s*highlightedOfferingId\)/,
+      "matchmaker page MUST use findSavedOfferingId to drive the row highlight (Finding 3)",
+    );
+    // The page MUST pass a `targetOfferingId` to `onInvite` so
+    // the Send project request targets the saved offering
+    // (not the row's best matching offering) when the saved
+    // offering is in `additionalMatchingOfferings`.
+    assert.match(
+      source,
+      /onInvite=\{[^}]*targetOfferingId[^}]*\}/,
+      "matchmaker page MUST pass a targetOfferingId to onInvite so Send project request targets the saved offering (Finding 3)",
+    );
+    // The page MUST forward the targetOfferingId to the
+    // inviteFromRecommendation seam so the API receives the
+    // saved offering's id (NOT the row's best matching
+    // offering).
+    assert.match(
+      source,
+      /targetOfferingId:\s*offeringId/,
+      "matchmaker page MUST forward targetOfferingId to the inviteFromRecommendation seam (Finding 3)",
+    );
+  });
+
+  // M2 (#87) 6th review Finding 16: the `submitting` comparison
+  // must use a stable per-row target id (saved offering or
+  // best-matching fallback). A `null === null` comparison would
+  // light up every row's "Inviting…" label on initial mount
+  // before any invite starts, and disable the buttons (the
+  // `disabled` check is any-in-flight, but the per-row
+  // `submitting` prop is supposed to reflect ONLY the in-flight
+  // row's id match).
+  test("Finding 16 — `submitting` comparison uses a stable per-row target id (6th review)", () => {
+    const source = readMatchmakerPage();
+    // The page MUST derive an `effectiveTargetOfferingId` that
+    // falls back to the row's bestMatchingOffering.offeringId
+    // when the Talent recovery is absent. The fallback
+    // guarantees the comparison resolves to a unique id per row
+    // on initial mount.
+    assert.match(
+      source,
+      /effectiveTargetOfferingId\s*=\s*targetOfferingId\s*\?\?/,
+      "matchmaker page MUST derive an effective target id that falls back to the row's best matching offering when the Talent recovery is absent (Finding 16)",
+    );
+    // The `submitting` prop MUST compare against the effective
+    // target id, not the (potentially null) saved offering id.
+    assert.match(
+      source,
+      /submitting=\{invitingRecommendationId\s*===\s*effectiveTargetOfferingId\}/,
+      "matchmaker page MUST compare `submitting` against the effective target id, not the saved offering id (Finding 16)",
+    );
+  });
+
+  // M2 (#87) 6th review Finding 17: the row MUST display the
+  // target offering's summary (title, category, audio preview,
+  // button offering-id) so the buyer reviews the exact offering
+  // the Send project request will target. When the saved
+  // offering is in `additionalMatchingOfferings`, the row must
+  // show the additional offering's title — not the row's best
+  // matching offering's title.
+  test("Finding 17 — row displays the target offering, not the best matching offering (6th review)", () => {
+    const source = readMatchmakerPage();
+    // The page MUST import the new helper.
+    assert.match(
+      source,
+      /import[\s\S]*?findSavedOfferingId[\s\S]*?selectTargetEvidence[\s\S]*?selectTargetOffering[\s\S]*?from\s*["']\.\/find-saved-offering-id["']/,
+      "matchmaker page MUST import findSavedOfferingId, selectTargetEvidence, and selectTargetOffering from the helper module (Finding 17 + 7th review Finding 2)",
+    );
+    // The page MUST call `selectTargetOffering` per recommendation
+    // so every row gets the correct target offering.
+    assert.match(
+      source,
+      /selectTargetOffering\([\s\S]*?rec[\s\S]*?highlightedOfferingId/,
+      "matchmaker page MUST call selectTargetOffering(rec, highlightedOfferingId) to compute the per-row target offering (Finding 17)",
+    );
+    // The RecommendationItem MUST accept the target offering
+    // and use it for the displayed title, audio, and button id.
+    assert.match(
+      source,
+      /targetOffering:\s*PublicOfferingSummaryV1/,
+      "RecommendationItem MUST accept a targetOffering: PublicOfferingSummaryV1 prop (Finding 17)",
+    );
+    // The displayed title MUST be the target offering's title.
+    assert.match(
+      source,
+      /targetOffering\.title/,
+      "RecommendationItem MUST render targetOffering.title (Finding 17 — buyer reviews the offering the request will target)",
+    );
+    // The audio preview toggle MUST target the row's target
+    // offering id (not the row's best matching offering id).
+    assert.match(
+      source,
+      /fetchRecommendationAudioPreview\(targetOffering\.offeringId\)/,
+      "RecommendationItem MUST fetch the audio preview for targetOffering.offeringId (Finding 17)",
+    );
+    // The button's data-offering-id MUST match the target.
+    assert.match(
+      source,
+      /data-offering-id=\{targetOffering\.offeringId\}/,
+      "Send project request button MUST label the target offering id, not the best matching offering id (Finding 17)",
     );
   });
 });

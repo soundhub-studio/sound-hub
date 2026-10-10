@@ -116,6 +116,50 @@ describe("resolvePostCommandReturnDestination", () => {
     assert.deepEqual(result, { route: "/talent", path: "/talent" });
   });
 
+  // M2 #87: /matchmaker is open (no capability gate). The substantive
+  // buyer-flow state (which offering to highlight, which brief / filters
+  // to pre-fill) rides in a localStorage record; the URL marker
+  // `?from=talent` is a routing hint, not a contract surface, and may
+  // be stripped by the bounded return resolver.
+  test("valid open route /matchmaker is accepted (no capability required)", () => {
+    const user = buildUser({ personal: true }); // no capabilities
+    const result = resolvePostCommandReturnDestination({
+      returnTo: "/matchmaker",
+      freshUser: user,
+      actingWorkspaceId: "ws-personal",
+      allowedOrigin: ALLOWED_ORIGIN,
+    });
+    assert.deepEqual(result, { route: "/matchmaker", path: "/matchmaker" });
+  });
+
+  test("/matchmaker?from=talent strips the query to /matchmaker (the marker is not part of the bounded route)", () => {
+    const user = buildUser({ personal: true, buyer: true });
+    const result = resolvePostCommandReturnDestination({
+      returnTo: "/matchmaker?from=talent",
+      freshUser: user,
+      actingWorkspaceId: "ws-personal",
+      allowedOrigin: ALLOWED_ORIGIN,
+    });
+    assert.deepEqual(result, { route: "/matchmaker", path: "/matchmaker" });
+  });
+
+  test("/matchmaker is reachable from a signed-in Buyer-capable Workspace (regression gate for the no-capability-gate contract)", () => {
+    // A Buyer-only Workspace returning from a non-#87 command must
+    // still be able to resume /matchmaker. Adding a Buyer gate to
+    // /matchmaker would break the "anonymous discovery on /talent"
+    // requirement, so the new route must stay open.
+    const user = buildUser({ personal: true, buyer: true });
+    const result = resolvePostCommandReturnDestination({
+      returnTo: "/matchmaker",
+      freshUser: user,
+      actingWorkspaceId: "ws-personal",
+      allowedOrigin: ALLOWED_ORIGIN,
+    });
+    if (!result) throw new Error("expected result");
+    assert.equal(result.route, "/matchmaker");
+    assert.equal(result.path, "/matchmaker");
+  });
+
   test("/deals + actor with Buyer capability is kept", () => {
     const user = buildUser({ personal: true, buyer: true });
     const result = resolvePostCommandReturnDestination({

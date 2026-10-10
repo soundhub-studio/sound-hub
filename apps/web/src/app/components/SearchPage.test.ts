@@ -35,6 +35,7 @@
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createElement } from "react";
 import { describe, test } from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { TalentSearchResultV1 } from "@soundhub/types";
@@ -97,7 +98,7 @@ const fullCoverageResult: TalentSearchResultV1 = {
 
 describe("SearchPage buyer-facing match evidence (P1-001)", () => {
   test("renders both the deterministic matchReason evidence and the qualitative fit", () => {
-    const html = renderToStaticMarkup(ResultCard({ result: sampleResult }));
+    const html = renderToStaticMarkup(createElement(ResultCard, { result: sampleResult }));
 
     // Deterministic evidence: the result-match-reason block carries the
     // factual matchReason the search service produced.
@@ -133,7 +134,7 @@ describe("SearchPage buyer-facing match evidence (P1-001)", () => {
   });
 
   test("qualitative fit shows the full-coverage variant when all preferences match", () => {
-    const html = renderToStaticMarkup(ResultCard({ result: fullCoverageResult }));
+    const html = renderToStaticMarkup(createElement(ResultCard, { result: fullCoverageResult }));
 
     assert.ok(
       html.includes("Matches all 2 requested preferences."),
@@ -142,7 +143,7 @@ describe("SearchPage buyer-facing match evidence (P1-001)", () => {
   });
 
   test("does not render a buyer-facing percentage or confidence claim", () => {
-    const html = renderToStaticMarkup(ResultCard({ result: sampleResult }));
+    const html = renderToStaticMarkup(createElement(ResultCard, { result: sampleResult }));
 
     // No numeric percentage next to any of the prohibited labels.
     assert.doesNotMatch(
@@ -197,7 +198,7 @@ describe("SearchPage buyer-facing match evidence (P1-001)", () => {
       relevanceScore: sampleResult.relevanceScore,
       matchReason: "eligible standalone offering",
     };
-    const html = renderToStaticMarkup(ResultCard({ result: requiredOnlyResult }));
+    const html = renderToStaticMarkup(createElement(ResultCard, { result: requiredOnlyResult }));
 
     assert.ok(
       html.includes('data-testid="result-match-reason"'),
@@ -242,7 +243,7 @@ describe("SearchPage buyer-facing match evidence (P1-001)", () => {
       relevanceScore: sampleResult.relevanceScore,
       matchReason: "eligible standalone offering",
     };
-    const html = renderToStaticMarkup(ResultCard({ result: requiredOnlyResult }));
+    const html = renderToStaticMarkup(createElement(ResultCard, { result: requiredOnlyResult }));
 
     // The public DTO still omits the optional coverage fields on a
     // required-only request — the fallback is rendered entirely from
@@ -278,7 +279,7 @@ describe("SearchPage buyer-facing match evidence (P1-001)", () => {
       matchReason: "matched offering title; matched category key",
       textCoverage: { matched: 2, total: 4 },
     };
-    const html = renderToStaticMarkup(ResultCard({ result: textOnlyResult }));
+    const html = renderToStaticMarkup(createElement(ResultCard, { result: textOnlyResult }));
 
     assert.ok(
       html.includes('data-testid="result-qualitative-fit"'),
@@ -312,7 +313,7 @@ describe("SearchPage buyer-facing match evidence (P1-001)", () => {
       preferenceCoverage: { matched: 1, total: 2 },
       textCoverage: { matched: 3, total: 4 },
     };
-    const html = renderToStaticMarkup(ResultCard({ result: combinedResult }));
+    const html = renderToStaticMarkup(createElement(ResultCard, { result: combinedResult }));
 
     const qualitativeBlocks = html.match(/data-testid="result-qualitative-fit"/g) ?? [];
     assert.ok(
@@ -343,7 +344,9 @@ describe("SearchPage buyer-facing match evidence (P1-001)", () => {
       matchReason: sampleResult.matchReason,
       textCoverage: { matched: 1, total: 1 },
     };
-    const html = renderToStaticMarkup(ResultCard({ result: fullTextCoverageResult }));
+    const html = renderToStaticMarkup(
+      createElement(ResultCard, { result: fullTextCoverageResult }),
+    );
     assert.ok(
       html.includes("Matches all 1 word of your brief."),
       "the brief-coverage description must say full coverage when matched === total",
@@ -353,7 +356,7 @@ describe("SearchPage buyer-facing match evidence (P1-001)", () => {
 
 describe("SearchPage shared offering-detail markup (P2-001)", () => {
   test("best offering and additional offerings render the same data-testid conventions", () => {
-    const html = renderToStaticMarkup(ResultCard({ result: sampleResult }));
+    const html = renderToStaticMarkup(createElement(ResultCard, { result: sampleResult }));
 
     // The best-offering path uses the `result-offering-…` prefix.
     assert.ok(
@@ -399,7 +402,7 @@ describe("SearchPage shared offering-detail markup (P2-001)", () => {
     // The best offering has no IncludedServices. The additional offering
     // carries one bundle-only IncludedService that must be labeled
     // `bundle only` so the buyer never reads it as a standalone purchase.
-    const html = renderToStaticMarkup(ResultCard({ result: sampleResult }));
+    const html = renderToStaticMarkup(createElement(ResultCard, { result: sampleResult }));
 
     assert.ok(
       html.includes("Remote coaching"),
@@ -409,7 +412,7 @@ describe("SearchPage shared offering-detail markup (P2-001)", () => {
   });
 
   test("renders the deterministic pricing disclaimer so no pricing presentation reads as a quote", () => {
-    const html = renderToStaticMarkup(ResultCard({ result: sampleResult }));
+    const html = renderToStaticMarkup(createElement(ResultCard, { result: sampleResult }));
 
     assert.ok(
       html.includes('data-testid="result-offering-pricing-disclaimer"'),

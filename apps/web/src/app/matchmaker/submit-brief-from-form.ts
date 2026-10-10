@@ -14,12 +14,29 @@
 // may inject a `submit` override to assert the payload contract
 // without exercising the network.
 
-import type { SubmitBriefResponseV1 } from "@soundhub/types";
+import type { SubmitBriefRequestV1, SubmitBriefResponseV1 } from "@soundhub/types";
 import { submitBrief } from "../lib/matchmaker-client";
 
 export interface SubmitBriefFromFormInput {
   readonly actingWorkspaceId: string;
   readonly briefText: string;
+  /**
+   * M2 (#87) Finding 8: optional buyer-supplied strict required
+   * criteria (M1's `talentSearchRequiredCriteriaV1Schema` shape).
+   * When present, the route applies them verbatim — the AI never
+   * relaxes a buyer-supplied hard axis. The matchmaker form
+   * populates this from the recovered Talent continuation
+   * record's `filters` so a buyer who searched with strict
+   * filters on /talent does not lose them on the round-trip to
+   * /matchmaker. Pass `null` to explicitly clear any previously
+   * supplied required criteria.
+   */
+  readonly required?: SubmitBriefRequestV1["required"] | null;
+  /**
+   * M2 (#87) Finding 8: optional buyer-supplied preferred criteria.
+   * Pass `null` to explicitly clear.
+   */
+  readonly preferred?: SubmitBriefRequestV1["preferred"] | null;
   readonly setError: (message: string | null) => void;
   readonly setResponse: (response: SubmitBriefResponseV1 | null) => void;
   readonly setSubmitting: (value: boolean) => void;
@@ -58,9 +75,18 @@ export async function submitBriefFromForm(input: SubmitBriefFromFormInput): Prom
   input.setSubmitting(true);
   try {
     const fn = input.submit ?? submitBrief;
+    // M2 (#87) Finding 8: forward buyer-supplied required +
+    // preferred criteria to the brief submission. A `null`
+    // value is forwarded as `undefined` (the schema's
+    // `.optional()` allows absent fields; explicit `null`
+    // would fail the strict schema).
+    const required = input.required === null ? undefined : input.required;
+    const preferred = input.preferred === null ? undefined : input.preferred;
     const result = await fn({
       actingWorkspaceId: input.actingWorkspaceId,
       briefText: input.briefText.trim(),
+      ...(required ? { required } : {}),
+      ...(preferred ? { preferred } : {}),
     });
     input.setResponse(result);
   } catch (err) {

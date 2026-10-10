@@ -138,6 +138,13 @@ async function handleSubmitBrief(
       userAccountId: session.userAccountId,
       actingWorkspaceId: parsed.actingWorkspaceId,
       briefText: parsed.briefText,
+      // M2 (#87) Finding 8: optional buyer-supplied required +
+      // preferred criteria. The route passes them through; the
+      // service merges them over the AI-derived criteria (buyer's
+      // required wins over AI's required; buyer's preferred wins
+      // over AI's preferred; AI's `query` axis is preserved).
+      buyerRequired: parsed.required,
+      buyerPreferred: parsed.preferred,
       buyerNonSearchRequirements: parsed.nonSearchRequirements,
     });
   } catch (err) {

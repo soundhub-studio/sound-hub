@@ -8,7 +8,7 @@
 // power the form's "usable criteria" decision and the request
 // construction that the shared Zod schema validates.
 
-import { type ServiceModeV1 } from "@soundhub/types";
+import { type ServiceModeV1, type TalentSearchRequiredCriteriaV1 } from "@soundhub/types";
 
 // The browser's representation of the contract's `LocationFilter`
 // sub-block (`{ city?, region?, countryCode? }`). The UI form has a
@@ -146,4 +146,40 @@ export function buildCandidatePayload(
   if (serviceAreaPayload !== undefined) required.serviceArea = serviceAreaPayload;
   if (Object.keys(required).length > 0) candidate.required = required;
   return candidate;
+}
+
+// M2 (#87) Finding 8: typed helper that returns the same `required`
+// block as `buildCandidatePayload` but typed as
+// `TalentSearchRequiredCriteriaV1 | undefined`. The matchmaker brief
+// submission forwards this to the API so a buyer-supplied required
+// block is applied verbatim (the AI is never allowed to relax a
+// buyer-supplied hard axis). Returns `undefined` when the filters
+// carry no usable axes so the buyer can submit a brief that uses
+// ONLY the natural-language text without losing the API's
+// `.optional()` semantics.
+export function buildRequiredCriteriaPayload(
+  filters: RequiredFiltersValue,
+): TalentSearchRequiredCriteriaV1 | undefined {
+  const required: {
+    primaryCategoryKeys?: string[];
+    independentlyPurchasableServiceKeys?: string[];
+    serviceModes?: ServiceModeV1[];
+    basedIn?: { city?: string; region?: string; countryCode?: string };
+    serviceArea?: { city?: string; region?: string; countryCode?: string };
+  } = {};
+  if (filters.primaryCategoryKey.length > 0) {
+    required.primaryCategoryKeys = [filters.primaryCategoryKey];
+  }
+  if (filters.independentlyPurchasableServiceKey.length > 0) {
+    required.independentlyPurchasableServiceKeys = [filters.independentlyPurchasableServiceKey];
+  }
+  if (filters.serviceModes.length > 0) {
+    required.serviceModes = [...filters.serviceModes];
+  }
+  const basedInPayload = toLocationFilterPayload(filters.basedIn);
+  if (basedInPayload !== undefined) required.basedIn = basedInPayload;
+  const serviceAreaPayload = toLocationFilterPayload(filters.serviceArea);
+  if (serviceAreaPayload !== undefined) required.serviceArea = serviceAreaPayload;
+  if (Object.keys(required).length === 0) return undefined;
+  return required;
 }

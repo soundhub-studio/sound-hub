@@ -19,6 +19,17 @@ export interface InviteFromRecommendationInput {
   readonly actingWorkspaceId: string;
   readonly briefId: string;
   readonly recommendation: MatchmakerRecommendationV1;
+  /**
+   * M2 (#87) Finding 8 (5th review): the saved offeringId from
+   * the Talent continuation record may resolve to either the
+   * recommendation's `bestMatchingOffering` or one of its
+   * `additionalMatchingOfferings`. When set, the Send project
+   * request targets exactly this offeringId (the buyer's
+   * original click on /talent). When absent, the request falls
+   * back to the recommendation's `bestMatchingOffering.offeringId`
+   * (the legacy path for fresh buyers with no Talent recovery).
+   */
+  readonly targetOfferingId?: string | null;
   readonly setError: (message: string | null) => void;
   readonly setSuccess: (message: string | null) => void;
   readonly setSubmitting: (value: boolean) => void;
@@ -47,13 +58,20 @@ export async function inviteFromRecommendation(
     input.setError("A persisted ProjectBrief is required to invite a seller.");
     return;
   }
+  // M2 (#87) Finding 8 (5th review): when the page passes a
+  // resolved `targetOfferingId` (the saved offeringId from the
+  // Talent recovery), use it verbatim. Otherwise fall back to the
+  // recommendation's `bestMatchingOffering` (the canonical row
+  // offering for fresh buyers with no Talent recovery).
+  const serviceOfferingId =
+    input.targetOfferingId ?? input.recommendation.bestMatchingOffering.offeringId;
   input.setSubmitting(true);
   try {
     const fn = input.invite ?? createProjectRequest;
     const result: CreateProjectRequestResponseV1 = await fn({
       actingWorkspaceId: input.actingWorkspaceId,
       projectBriefId: input.briefId,
-      serviceOfferingId: input.recommendation.bestMatchingOffering.offeringId,
+      serviceOfferingId,
     });
     input.setSuccess(
       `Invited ${input.recommendation.professionalName} — ProjectRequest ${result.projectRequest.projectRequestId} persisted as Pending.`,

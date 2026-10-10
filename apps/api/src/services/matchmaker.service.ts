@@ -34,6 +34,8 @@ import type {
   PublicOfferingSummaryV1,
   PublicSellerSummaryV1,
   TalentSearchRequestV1,
+  TalentSearchRequiredCriteriaV1,
+  TalentSearchPreferredCriteriaV1,
   TalentSearchResponseV1,
 } from "@soundhub/types";
 import { matchmakerCriteriaV1Schema, publicOfferingSummaryV1Schema } from "@soundhub/types";
@@ -93,6 +95,21 @@ export interface SubmitBriefInput {
   readonly userAccountId: string;
   readonly actingWorkspaceId: string;
   readonly briefText: string;
+  /**
+   * M2 (#87) Finding 8: optional buyer-supplied required criteria.
+   * When present, the buyer's required block overrides the AI's
+   * required block. The values round-trip through
+   * `talentSearchRequiredCriteriaV1Schema` at the route boundary;
+   * the service does not re-validate them.
+   */
+  readonly buyerRequired?: TalentSearchRequiredCriteriaV1;
+  /**
+   * M2 (#87) Finding 8: optional buyer-supplied preferred criteria.
+   * When present, the buyer's preferred block overrides the AI's
+   * preferred block. The values round-trip through
+   * `talentSearchPreferredCriteriaV1Schema` at the route boundary.
+   */
+  readonly buyerPreferred?: TalentSearchPreferredCriteriaV1;
   readonly buyerNonSearchRequirements?: Record<string, string>;
 }
 
@@ -143,6 +160,19 @@ export class MatchmakerService {
    *   6. Persist the Brief + results in a single transactional
    *      write.
    *   7. Return the buyer-safe DTO (recommendations + brief).
+   *
+   * M2 (#87) Finding 8 — buyer-supplied required criteria
+   * preservation: when the buyer supplies `required` (and/or
+   * `preferred`) in the request, those axes are applied to the
+   * search request as-is. The AI is still invoked for the
+   * natural-language brief text to derive the `query` axis and
+   * any non-supplied preferred axes, but a buyer-supplied
+   * required axis is never relaxed, dropped, or rewritten by the
+   * AI. The merge rule is: AI output is authoritative for the
+   * `query` axis and for any non-supplied preferred axes; the
+   * buyer's required axes are authoritative for the `required`
+   * block; the buyer's preferred axes (when present) override
+   * the AI's preferred axes.
    */
   async submitBrief(input: SubmitBriefInput): Promise<SubmitBriefResult> {
     const membership = await this.requireBuyer(input.userAccountId, input.actingWorkspaceId);
@@ -239,6 +269,29 @@ export class MatchmakerService {
           "MATCHMAKER_INVALID_REQUEST",
         );
       }
+    }
+
+    // M2 (#87) Finding 8 (5th review): per-axis merge of
+    // buyer-supplied required + preferred axes. The buyer wins
+    // only on the specific axes the buyer supplied a value for
+    // (the "conflict" axes). Non-conflicting AI-derived axes
+    // are preserved — the AI is allowed to contribute axes the
+    // buyer did not name, but the AI is never allowed to relax
+    // a buyer-supplied hard axis. An axis is "buyer-supplied"
+    // when its value is present in the buyer's criteria block
+    // (non-empty string array, non-empty mode array, or a
+    // location object with at least one non-empty sub-field).
+    if (input.buyerRequired !== undefined) {
+      criteria = {
+        ...criteria,
+        required: mergeRequiredCriteriaPerAxis(criteria.required, input.buyerRequired),
+      };
+    }
+    if (input.buyerPreferred !== undefined) {
+      criteria = {
+        ...criteria,
+        preferred: mergePreferredCriteriaPerAxis(criteria.preferred ?? {}, input.buyerPreferred),
+      };
     }
 
     // Provenance. The fallback flag is true if EITHER path was
@@ -539,3 +592,108 @@ function collectExplanations(
 // Avoid a circular import at module load by re-exporting the
 // response shape for routes that need it.
 export type { SubmitBriefResponseV1 };
+
+// M2 (#87) Finding 8 (5th review): per-axis merge helpers.
+//
+// The buyer's `required` block is merged with the AI's `required`
+// block on a per-axis basis. An axis the buyer supplied a value
+// for wins over the AI's value for that same axis; an axis the
+// buyer did NOT supply is preserved from the AI. This rule
+// guarantees two invariants:
+//
+//   1. The AI is never allowed to relax a buyer-supplied hard
+//      axis. A buyer who named a constraint gets exactly that
+//      constraint.
+//   2. The AI is allowed to contribute axes the buyer did not
+//      name. A buyer who supplied only `primaryCategoryKeys`
+//      does not erase the AI's inferred `serviceModes`,
+//      `basedIn`, or `serviceArea` — the buyer's brief and the
+//      AI's interpretation are both first-class inputs.
+//
+// An axis is "buyer-supplied" when:
+//   - `primaryCategoryKeys` is a non-empty array.
+//   - `independentlyPurchasableServiceKeys` is a non-empty array.
+//   - `serviceModes` is a non-empty array.
+//   - `basedIn` is a non-empty location object (at least one
+//     of city/region/countryCode is set).
+//   - `serviceArea` is a non-empty location object.
+//
+// The merge is exposed at module scope (not a private helper)
+// so the focused unit test can drive the per-axis semantics
+// without spinning up the full MatchmakerService.
+function isLocationSet(
+  value: { city?: string; region?: string; countryCode?: string } | undefined,
+): boolean {
+  if (value === undefined) return false;
+  return (
+    (value.city !== undefined && value.city.length > 0) ||
+    (value.region !== undefined && value.region.length > 0) ||
+    (value.countryCode !== undefined && value.countryCode.length > 0)
+  );
+}
+
+export function mergeRequiredCriteriaPerAxis(
+  aiRequired: TalentSearchRequiredCriteriaV1,
+  buyerRequired: TalentSearchRequiredCriteriaV1,
+): TalentSearchRequiredCriteriaV1 {
+  const merged: TalentSearchRequiredCriteriaV1 = { ...aiRequired };
+  if (
+    buyerRequired.primaryCategoryKeys !== undefined &&
+    buyerRequired.primaryCategoryKeys.length > 0
+  ) {
+    merged.primaryCategoryKeys = [...buyerRequired.primaryCategoryKeys];
+  }
+  if (
+    buyerRequired.independentlyPurchasableServiceKeys !== undefined &&
+    buyerRequired.independentlyPurchasableServiceKeys.length > 0
+  ) {
+    merged.independentlyPurchasableServiceKeys = [
+      ...buyerRequired.independentlyPurchasableServiceKeys,
+    ];
+  }
+  if (buyerRequired.serviceModes !== undefined && buyerRequired.serviceModes.length > 0) {
+    merged.serviceModes = [...buyerRequired.serviceModes];
+  }
+  if (isLocationSet(buyerRequired.basedIn)) {
+    merged.basedIn = { ...buyerRequired.basedIn };
+  }
+  if (isLocationSet(buyerRequired.serviceArea)) {
+    merged.serviceArea = { ...buyerRequired.serviceArea };
+  }
+  return merged;
+}
+
+export function mergePreferredCriteriaPerAxis(
+  aiPreferred: TalentSearchPreferredCriteriaV1,
+  buyerPreferred: TalentSearchPreferredCriteriaV1,
+): TalentSearchPreferredCriteriaV1 {
+  const merged: TalentSearchPreferredCriteriaV1 = { ...aiPreferred };
+  if (buyerPreferred.categoryKeys !== undefined && buyerPreferred.categoryKeys.length > 0) {
+    merged.categoryKeys = [...buyerPreferred.categoryKeys];
+  }
+  if (
+    buyerPreferred.includedServiceKeys !== undefined &&
+    buyerPreferred.includedServiceKeys.length > 0
+  ) {
+    merged.includedServiceKeys = [...buyerPreferred.includedServiceKeys];
+  }
+  if (buyerPreferred.specialties !== undefined && buyerPreferred.specialties.length > 0) {
+    merged.specialties = [...buyerPreferred.specialties];
+  }
+  if (buyerPreferred.genreTags !== undefined && buyerPreferred.genreTags.length > 0) {
+    merged.genreTags = [...buyerPreferred.genreTags];
+  }
+  if (
+    buyerPreferred.caribbeanAffiliationCodes !== undefined &&
+    buyerPreferred.caribbeanAffiliationCodes.length > 0
+  ) {
+    merged.caribbeanAffiliationCodes = [...buyerPreferred.caribbeanAffiliationCodes];
+  }
+  if (buyerPreferred.serviceModes !== undefined && buyerPreferred.serviceModes.length > 0) {
+    merged.serviceModes = [...buyerPreferred.serviceModes];
+  }
+  if (isLocationSet(buyerPreferred.basedIn)) {
+    merged.basedIn = { ...buyerPreferred.basedIn };
+  }
+  return merged;
+}

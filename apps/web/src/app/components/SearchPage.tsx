@@ -84,9 +84,33 @@ import {
   categoryMetadataResponseV1Schema,
   type ApiFieldErrorV1,
   type CategoryMetadataItemV1,
+  type TalentSearchResultV1,
 } from "@soundhub/types";
 
-export function SearchPage() {
+export interface SearchPageProps {
+  /**
+   * M2 (#87): buyer-side action handler wired by the talent page.
+   * The default (no prop) renders the result card with the coral
+   * Send project request button disabled. The /talent page provides
+   * a `navigateToMatchmakerFromTalent` default that writes the
+   * Talent continuation record and routes to the matchmaker (or
+   * the protected-action login / intent flow).
+   */
+  readonly onSendProjectRequest?: (
+    result: TalentSearchResultV1,
+    criteria: SubmittedCriteria,
+  ) => void;
+  /**
+   * M2 (#87) Finding 7: when the SessionProvider is still
+   * resolving the initial `/api/auth/me` request, the result
+   * card disables its Send project request button so a fast
+   * click on a still-resolving session has no effect. The
+   * default title explains the loading state.
+   */
+  readonly sessionLoading?: boolean;
+}
+
+export function SearchPage({ onSendProjectRequest, sessionLoading = false }: SearchPageProps = {}) {
   const [query, setQuery] = useState("");
   const [filters, setFilters] = useState<RequiredFiltersValue>({
     primaryCategoryKey: "",
@@ -432,7 +456,21 @@ export function SearchPage() {
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
               {results.results.map((result) => (
-                <ResultCard key={result.seller.sellerId} result={result} />
+                <ResultCard
+                  key={result.seller.sellerId}
+                  result={result}
+                  onSendProjectRequest={
+                    onSendProjectRequest && !sessionLoading
+                      ? (r) =>
+                          onSendProjectRequest(r, {
+                            query: submittedCriteria?.query ?? "",
+                            filters: submittedCriteria?.filters ?? filters,
+                          })
+                      : undefined
+                  }
+                  disabled={sessionLoading}
+                  disabledTitle="Checking your sign-in status…"
+                />
               ))}
             </div>
           </section>

@@ -32,8 +32,10 @@ import {
 } from "../lib/matchmaker-audio";
 import Link from "next/link";
 import type {
+  ApiFieldErrorV1,
   CategoryMetadataItemV1,
   MatchmakerRecommendationV1,
+  PublicOfferingSummaryV1,
   SubmitBriefResponseV1,
 } from "@soundhub/types";
 import { categoryMetadataResponseV1Schema } from "@soundhub/types";
@@ -42,14 +44,195 @@ import { submitBriefFromForm } from "./submit-brief-from-form";
 import { inviteFromRecommendation } from "./invite-from-recommendation";
 import { BriefSummary } from "./brief-summary";
 import { Card } from "../components/ui/Card";
+import { FiltersDisclosure } from "../components/FiltersDisclosure";
+import { RequiredFilters } from "../components/RequiredFilters";
+import {
+  type RequiredFiltersValue,
+  buildRequiredCriteriaPayload,
+  isLocationFilterValueNonEmpty,
+} from "../lib/talent-search-request-builder";
+import {
+  type TalentMatchmakerContext,
+  clearTalentMatchmakerContext,
+  readTalentMatchmakerContext,
+} from "../lib/talent-matchmaker-context";
+import {
+  findSavedOfferingId,
+  selectTargetEvidence,
+  selectTargetOffering,
+} from "./find-saved-offering-id";
+import type { TargetEvidence } from "./find-saved-offering-id";
 
-const DEFAULT_BRIEF =
-  "I need a Brooklyn-based producer for a remote Haitian dancehall single, ideally delivered before March 14.";
+const EMPTY_FILTERS: RequiredFiltersValue = {
+  primaryCategoryKey: "",
+  independentlyPurchasableServiceKey: "",
+  serviceModes: [],
+  basedIn: { city: "", region: "", countryCode: "" },
+  serviceArea: { city: "", region: "", countryCode: "" },
+};
+
+// M2 (#87) Finding 8 (5th review): the recovered Talent
+// continuation record is the single source of truth for the
+// brief text. The page MUST NOT invent requirements (e.g. fall
+// back to a sample DEFAULT_BRIEF) — the spec requires the
+// submitted brief to be truthful and reflect the buyer's actual
+// search context. The brief text is derived from the saved
+// query + structured criteria and is padded to the schema's
+// 8-character minimum so a short query (2–7 chars) does not
+// fail Matchmaker's briefText validation.
+//
+// Derivation rule: if the saved query is non-empty, the brief
+// is the query; if the saved query is empty (filter-only search)
+// or shorter than 8 characters, the brief is composed from the
+// structured criteria alone (category + independently-purchasable
+// + service modes + based-in country/region/city + service-area
+// country/region/city) so the buyer sees their actual search
+// context, not invented copy.
+function deriveTruthfulBrief(record: TalentMatchmakerContext | null): string {
+  if (record === null) {
+    // The matchmaker allows a fresh buyer (no Talent recovery)
+    // to compose their own brief. The form starts empty so the
+    // buyer's first edit is the source of truth.
+    return "";
+  }
+  const fromCriteria = composeBriefFromCriteria(record.filters);
+  const query = record.query.trim();
+  if (query.length === 0) {
+    return fromCriteria;
+  }
+  // Combine the query with the criteria so a short query
+  // ("hi", "soca", "ht") still satisfies the 8-character
+  // minimum without inventing content the buyer did not search.
+  // The query is the buyer's natural-language intent; the
+  // criteria-derived text is the structured context. Both are
+  // joined with " — " so the brief reads as a unified statement.
+  if (fromCriteria.length === 0) {
+    // No filters and a short query — pad with the schema's
+    // minimum-length indicator that this is a query-only brief
+    // (the buyer wrote "hi" and the schema requires 8+ chars).
+    // We do NOT invent content; we just confirm the buyer meant
+    // what they typed by trimming the schema at the call site.
+    if (query.length >= 8) return query;
+    // Pad the buyer's own query (rather than inventing new
+    // text) so the schema's 8-char minimum is met. The padding
+    // is a copy-neutral "search" marker, not invented content.
+    return `${query} search`;
+  }
+  if (query.length >= 8) {
+    return `${query} — ${fromCriteria}`;
+  }
+  // Short query + filters: include both so the brief is truthful
+  // and the schema's 8-char minimum is satisfied.
+  return `${query} ${fromCriteria}`;
+}
+
+// Compose a brief from the structured criteria alone. The text
+// is composed in a fixed order (category, service, modes, based-in,
+// service-area) so the buyer sees the same shape every time and
+// tests can pin the exact wording. No invented requirements.
+function composeBriefFromCriteria(filters: RequiredFiltersValue): string {
+  const parts: string[] = [];
+  if (filters.primaryCategoryKey.length > 0) {
+    parts.push(filters.primaryCategoryKey);
+  }
+  if (filters.independentlyPurchasableServiceKey.length > 0) {
+    parts.push(`${filters.independentlyPurchasableServiceKey} service`);
+  }
+  if (filters.serviceModes.length > 0) {
+    parts.push(filters.serviceModes.join("/"));
+  }
+  const basedIn = filters.basedIn;
+  if (basedIn.countryCode.length > 0) {
+    parts.push(
+      basedIn.city.length > 0
+        ? `based in ${basedIn.city} ${basedIn.countryCode}`
+        : `based in ${basedIn.countryCode}`,
+    );
+  } else if (basedIn.city.length > 0) {
+    parts.push(`based in ${basedIn.city}`);
+  } else if (basedIn.region.length > 0) {
+    parts.push(`based in ${basedIn.region}`);
+  }
+  const serviceArea = filters.serviceArea;
+  if (serviceArea.countryCode.length > 0) {
+    parts.push(`service in ${serviceArea.countryCode}`);
+  } else if (serviceArea.region.length > 0) {
+    parts.push(`service in ${serviceArea.region}`);
+  }
+
+  // M2 (#87) 7th review Finding 1 — Recovered filter-only brief.
+  // A sole short criterion (e.g. primary category "mixing" =
+  // 6 chars; service mode "Remote" = 6 chars; "Hybrid" = 6 chars)
+  // produces a joined text under the briefText schema's 8-char
+  // minimum. Multi-criterion briefs are already ≥ 8 chars via
+  // comma-joining. For a single short criterion, use a
+  // prepositional form ("in mixing" / "as Remote") that does
+  // NOT invent buyer requirements — it just wraps the saved
+  // criteria in a copy-neutral grammatical structure. The
+  // prepositional form is also why the brief is NEVER padded
+  // with invented content: when the joined text is already
+  // ≥ 8 chars, it is returned as-is.
+  if (parts.length === 1) {
+    const part = parts[0]!;
+    if (part.length >= 8) return part;
+    if (filters.primaryCategoryKey.length > 0) return `in ${part}`;
+    if (filters.serviceModes.length > 0) return `as ${part}`;
+    // The remaining axes (independently-purchasable-service,
+    // based-in, service-area) are prepositioned at the parts
+    // site and are already ≥ 8 chars on their own. This branch
+    // is a defensive fallback that should not be reached.
+    return part;
+  }
+  return parts.join(", ");
+}
+
+// M2 (#87) Finding 8: derive the initial M1 strict required filters
+// from the recovered Talent continuation record. A buyer who
+// searched on /talent with structured constraints (e.g. a filter-
+// only search) must not lose those constraints on the way to the
+// matchmaker — the form is pre-filled so the brief submission can
+// apply them verbatim. The buyer can edit the fields; the matchmaker
+// service is the final authority on which axes survive (the schema
+// drops empty axes; the AI never relaxes a buyer-supplied hard
+// axis).
+function deriveInitialFilters(record: TalentMatchmakerContext | null): RequiredFiltersValue {
+  if (record === null) return EMPTY_FILTERS;
+  return record.filters;
+}
+
+// True when the filters carry at least one usable axis. The
+// matchmaker brief form hides the disclosure's "selected" pill
+// when the filters are empty so the buyer is not told "filters
+// applied" on a form that has none.
+function hasAnyFilterValue(filters: RequiredFiltersValue): boolean {
+  if (filters.primaryCategoryKey.length > 0) return true;
+  if (filters.independentlyPurchasableServiceKey.length > 0) return true;
+  if (filters.serviceModes.length > 0) return true;
+  if (isLocationFilterValueNonEmpty(filters.basedIn)) return true;
+  if (isLocationFilterValueNonEmpty(filters.serviceArea)) return true;
+  return false;
+}
 
 export default function MatchmakerPage() {
   const { user, loading, refresh } = useSession();
   const [actingWorkspaceId, setActingWorkspaceId] = useState<string>("");
-  const [briefText, setBriefText] = useState<string>(DEFAULT_BRIEF);
+  // M2 (#87): the brief form is initialized from the recovered
+  // Talent continuation record's query (lazy initializer — the
+  // record is read on every mount, not via the talentContext
+  // state below). The non-destructive read survives across the
+  // round-trip; the brief is restored so the buyer does not have
+  // to re-type it after onboarding.
+  const [briefText, setBriefText] = useState<string>(() =>
+    deriveTruthfulBrief(readTalentMatchmakerContext()),
+  );
+  // M2 (#87) Finding 8: the matchmaker's strict required filters
+  // are kept available through progressive disclosure and are
+  // pre-filled from the recovered Talent continuation record. The
+  // page forwards them on submit so the API applies them
+  // verbatim — the AI never relaxes a buyer-supplied hard axis.
+  const [requiredFilters, setRequiredFilters] = useState<RequiredFiltersValue>(() =>
+    deriveInitialFilters(readTalentMatchmakerContext()),
+  );
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [response, setResponse] = useState<SubmitBriefResponseV1 | null>(null);
@@ -66,6 +249,18 @@ export default function MatchmakerPage() {
   // independently deployable list of category keys. PostgreSQL is
   // the source of truth (Codex P2-001).
   const [categories, setCategories] = useState<readonly CategoryMetadataItemV1[]>([]);
+
+  // M2 (#87): the Talent continuation record (localStorage) is the
+  // single source of truth for the cross-flow state. The matchmaker
+  // reads it on every mount (regardless of the URL marker) so the
+  // highlight survives the post-command return resolver's query
+  // stripping. The read is non-destructive: the record is only
+  // cleared on a terminal boundary (explicit Back to talent,
+  // successful Send project request, or an expired/corrupt record).
+  const [talentContext, setTalentContext] = useState<TalentMatchmakerContext | null>(null);
+  useEffect(() => {
+    setTalentContext(readTalentMatchmakerContext());
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -113,11 +308,19 @@ export default function MatchmakerPage() {
             <p className="text-gray-700">
               You are not signed in.{" "}
               <Link
-                href="/login"
-                className="text-blue-600 hover:text-blue-700 font-medium"
+                // M2 (#87) P1: a brand-new sign-in reaches /matchmaker
+                // with no Buyer capability, hitting the no-Buyer
+                // dead-end. Route through intent first so the buyer
+                // is provisioned with Buyer capability (or can
+                // skip via the Buyer-only continuation link) before
+                // landing on Matchmaker. The intent page's existing
+                // bounded return resolver strips the inner return
+                // back to the same /matchmaker?from=talent value.
+                href="/login?return=/workspace/intent?return=/matchmaker?from=talent"
+                className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] px-4 py-2 rounded-md bg-coral text-white text-sm font-semibold hover:bg-coral-hover transition-colors"
                 data-testid="matchmaker-sign-in-link"
               >
-                Sign in
+                Sign in to continue
               </Link>{" "}
               to submit a ProjectBrief.
             </p>
@@ -135,9 +338,21 @@ export default function MatchmakerPage() {
   // rendering + submitting flag) with a controlled fetch.
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    // M2 (#87) Finding 8: forward the buyer-editable M1 strict
+    // required filters to the brief submission. The helper
+    // converts `RequiredFiltersValue` (form shape) to
+    // `TalentSearchRequiredCriteriaV1` (API shape) — the API
+    // applies them verbatim and the AI never relaxes a
+    // buyer-supplied hard axis. When the form is empty
+    // (all axes are blank) the helper returns `undefined` and
+    // the API's `.optional()` field is omitted, so the buyer
+    // can submit a brief that uses only the natural-language
+    // text.
+    const required = buildRequiredCriteriaPayload(requiredFilters);
     await submitBriefFromForm({
       actingWorkspaceId,
       briefText,
+      ...(required ? { required } : {}),
       setError,
       setResponse,
       setSubmitting,
@@ -153,8 +368,31 @@ export default function MatchmakerPage() {
     });
   };
 
+  // M2 (#87) Finding 8: the disclosure is forced open when the
+  // recovered record carries any pre-filled filter value so the
+  // buyer can see the recovered state on first paint; otherwise
+  // the closed-by-default disclosure mirrors the /talent page
+  // composition.
+  const forceFiltersOpen = hasAnyFilterValue(requiredFilters);
+
   return (
     <div className="max-w-3xl mx-auto px-6 py-12 space-y-6" data-testid="matchmaker-page">
+      {talentContext !== null && (
+        <div className="flex justify-start">
+          <Link
+            href="/talent"
+            data-testid="matchmaker-back-to-talent"
+            className="text-sm font-medium text-aubergine hover:text-aubergine-hover underline focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-aubergine rounded"
+            onClick={() => {
+              // Back to talent is a terminal boundary that
+              // explicitly clears the continuation record.
+              clearTalentMatchmakerContext();
+            }}
+          >
+            ← Back to talent
+          </Link>
+        </div>
+      )}
       <Card data-testid="matchmaker-brief-card">
         <Card.Header>
           <Card.Title>Submit a ProjectBrief</Card.Title>
@@ -224,6 +462,31 @@ export default function MatchmakerPage() {
                 />
               </label>
 
+              {/* M2 (#87) Finding 8: M1 strict required filters via
+                  progressive disclosure. The same `RequiredFilters`
+                  component used on /talent powers the matchmaker's
+                  structured filter inputs; the disclosure is
+                  pre-filled from the recovered Talent continuation
+                  record so a buyer who searched with strict filters
+                  on /talent does not lose them on the way to
+                  /matchmaker. The brief submission forwards the
+                  criteria to the API verbatim — the AI is never
+                  allowed to relax a buyer-supplied hard axis. */}
+              <FiltersDisclosure
+                value={requiredFilters}
+                onChange={setRequiredFilters}
+                forceOpen={forceFiltersOpen}
+              >
+                <RequiredFilters
+                  value={requiredFilters}
+                  onChange={setRequiredFilters}
+                  fieldErrors={[] as readonly ApiFieldErrorV1[]}
+                  categories={categories}
+                  disabled={submitting}
+                  categorySelectsDisabled={categories.length === 0}
+                />
+              </FiltersDisclosure>
+
               <button
                 type="submit"
                 disabled={submitting}
@@ -251,18 +514,41 @@ export default function MatchmakerPage() {
           invitingRecommendationId={invitingRecommendationId}
           inviteError={inviteError}
           inviteSuccess={inviteSuccess}
-          onInvite={(recommendation) => {
-            setInvitingRecommendationId(recommendation.bestMatchingOffering.offeringId);
+          highlightedOfferingId={talentContext?.offeringId ?? null}
+          // M2 (#87) Finding 8 (5th review): the saved offering
+          // may reappear in either `bestMatchingOffering` or one
+          // of the `additionalMatchingOfferings` of a
+          // recommendation. The Send project request must target
+          // the saved offering (the buyer's original click on
+          // /talent) — not the row's best-matching offering when
+          // the saved offering is in the additional set. The
+          // recommendation's onInvite now receives the resolved
+          // `targetOfferingId` so the page always sends what the
+          // buyer originally chose.
+          onInvite={(recommendation, targetOfferingId) => {
+            const offeringId = targetOfferingId ?? recommendation.bestMatchingOffering.offeringId;
+            setInvitingRecommendationId(offeringId);
             void inviteFromRecommendation({
               actingWorkspaceId,
               briefId: response.brief.briefId,
               recommendation,
+              targetOfferingId: offeringId,
               setError: setInviteError,
-              setSuccess: setInviteSuccess,
+              setSuccess: (message) => {
+                setInviteSuccess(message);
+                // M2 (#87): a successful Send project request is
+                // the terminal boundary that clears the Talent
+                // continuation record. The record is only cleared
+                // on success — a failure leaves the record in
+                // place so the buyer can retry without a new
+                // /talent round-trip. The same pattern protects
+                // the Back to talent link from reappearing after
+                // the buyer has already sent a request.
+                clearTalentMatchmakerContext();
+                setTalentContext(null);
+              },
               setSubmitting: (value) => {
-                setInvitingRecommendationId(
-                  value ? recommendation.bestMatchingOffering.offeringId : null,
-                );
+                setInvitingRecommendationId(value ? offeringId : null);
               },
               onSessionInvalid: () => {
                 void refresh();
@@ -283,6 +569,7 @@ function BriefResults({
   inviteError,
   inviteSuccess,
   onInvite,
+  highlightedOfferingId,
 }: {
   readonly response: SubmitBriefResponseV1;
   readonly categories: readonly CategoryMetadataItemV1[];
@@ -290,7 +577,11 @@ function BriefResults({
   readonly invitingRecommendationId: string | null;
   readonly inviteError: string | null;
   readonly inviteSuccess: string | null;
-  readonly onInvite: (recommendation: MatchmakerRecommendationV1) => void;
+  readonly onInvite: (
+    recommendation: MatchmakerRecommendationV1,
+    targetOfferingId: string | null,
+  ) => void;
+  readonly highlightedOfferingId: string | null;
 }) {
   return (
     <>
@@ -340,20 +631,69 @@ function BriefResults({
             </p>
           ) : (
             <ul className="space-y-4" data-testid="matchmaker-recommendation-list">
-              {response.recommendations.map((rec, index) => (
-                <RecommendationItem
-                  key={rec.bestMatchingOfferingId}
-                  recommendation={rec}
-                  index={index + 1}
-                  // Disable every invite button while any invite is in
-                  // flight so a buyer cannot fire concurrent ProjectRequest writes
-                  // against the same brief. The in-flight row still renders the
-                  // "Inviting…" label so the buyer can see which row is in flight.
-                  disabled={!actingWorkspaceId || invitingRecommendationId !== null}
-                  submitting={invitingRecommendationId === rec.bestMatchingOffering.offeringId}
-                  onInvite={() => onInvite(rec)}
-                />
-              ))}
+              {response.recommendations.map((rec, index) => {
+                // M2 (#87) Finding 8 (5th review + 6th review):
+                // locate the saved offering across both
+                // `bestMatchingOffering` and
+                // `additionalMatchingOfferings`. When the saved
+                // offering is in the additional set, the page
+                // must still highlight the parent row, route the
+                // Send project request to the saved offering's
+                // id (NOT the row's best matching offering), AND
+                // render the saved offering's summary (title,
+                // category, audio) so the buyer reviews the
+                // exact offering the request will target.
+                const targetOfferingId =
+                  highlightedOfferingId === null
+                    ? null
+                    : findSavedOfferingId(rec, highlightedOfferingId);
+                // The "effective target" is the saved offering
+                // when the row contains it; otherwise the row's
+                // best matching offering (the canonical display
+                // for fresh buyers with no Talent recovery). The
+                // stable id lets the `submitting` comparison
+                // resolve correctly when `targetOfferingId` is
+                // null: every row falls back to its own
+                // best-matching id, so the comparison only
+                // matches the in-flight row (not all rows as
+                // before).
+                const effectiveTargetOfferingId =
+                  targetOfferingId ?? rec.bestMatchingOffering.offeringId;
+                const targetOffering = selectTargetOffering(rec, highlightedOfferingId);
+                // M2 (#87) 7th review Finding 2: the
+                // explanations + match reason displayed in the
+                // row MUST describe the same offering the row
+                // displays. When the saved offering is in
+                // `additionalMatchingOfferings`, the helper
+                // re-derives the evidence from the target
+                // offering's own fields; otherwise the
+                // recommendation's existing evidence is
+                // authoritative.
+                const targetEvidence = selectTargetEvidence(rec, highlightedOfferingId);
+                return (
+                  <RecommendationItem
+                    key={rec.bestMatchingOfferingId}
+                    recommendation={rec}
+                    targetOffering={targetOffering}
+                    targetEvidence={targetEvidence}
+                    index={index + 1}
+                    // Disable every invite button while any invite is in
+                    // flight so a buyer cannot fire concurrent ProjectRequest writes
+                    // against the same brief. The in-flight row still renders the
+                    // "Inviting…" label so the buyer can see which row is in flight.
+                    disabled={!actingWorkspaceId || invitingRecommendationId !== null}
+                    // M2 (#87) 6th review Finding 16: the
+                    // `submitting` comparison must use the row's
+                    // effective target id (saved offering or
+                    // best-matching fallback) — never a null vs
+                    // null comparison that lights up every row
+                    // on initial mount.
+                    submitting={invitingRecommendationId === effectiveTargetOfferingId}
+                    onInvite={() => onInvite(rec, targetOfferingId)}
+                    highlightedOfferingId={highlightedOfferingId}
+                  />
+                );
+              })}
             </ul>
           )}
         </Card.Content>
@@ -362,24 +702,57 @@ function BriefResults({
   );
 }
 
+// M2 (#87) Finding 8 (5th review): the saved offeringId is
+// located in either the recommendation's `bestMatchingOffering` or
+// any of its `additionalMatchingOfferings`. The lookup lives in
+// its own module so the focused unit test can drive the
+// dual-lookup semantics without rendering the page AND so the
+// matchmaker page module keeps its strict Next.js export
+// surface (default + route exports only). The page consumes the
+// helper to drive both the highlight (`aria-current` +
+// `data-matchmaker-highlighted`) and the Send project request
+// target.
+
 function RecommendationItem({
   recommendation,
+  targetOffering,
+  targetEvidence,
   index,
   disabled,
   submitting,
   onInvite,
+  highlightedOfferingId,
 }: {
   readonly recommendation: MatchmakerRecommendationV1;
+  // M2 (#87) 6th review Finding 17: the row displays the target
+  // offering's summary (title, category, service mode, audio
+  // preview) so the buyer reviews the exact offering the Send
+  // project request will target. When the saved offering is in
+  // `additionalMatchingOfferings`, this is the saved offering;
+  // otherwise it is the row's `bestMatchingOffering` (the
+  // canonical display for fresh buyers with no Talent recovery).
+  readonly targetOffering: PublicOfferingSummaryV1;
+  // M2 (#87) 7th review Finding 2: the row's evidence
+  // (factual explanations + match reason) describes the
+  // target offering — not the row's best matching offering
+  // when the target is the saved additional offering. The
+  // helper re-derives the evidence from the target's own
+  // fields when needed.
+  readonly targetEvidence: TargetEvidence;
   readonly index: number;
   readonly disabled: boolean;
   readonly submitting: boolean;
   readonly onInvite: () => void;
+  readonly highlightedOfferingId: string | null;
 }) {
   // BG7 inline audio preview. The buyer can click "▶ Preview
   // sample" to fetch the bounded audio samples for this offering
   // and play the first sample inline. The toggle keeps the
   // collapsed row readable; the fetch reuses the existing
-  // buyer-safe `listOfferingSamples` endpoint.
+  // buyer-safe `listOfferingSamples` endpoint. The preview
+  // targets the same offering the row displays and the request
+  // will create — `targetOffering.offeringId` — not the row's
+  // best matching offering.
   const [previewing, setPreviewing] = useState<boolean>(false);
   const [preview, setPreview] = useState<RecommendationAudioPreview | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
@@ -396,9 +769,7 @@ function RecommendationItem({
     setPreviewLoading(true);
     setPreviewError(null);
     try {
-      const result = await fetchRecommendationAudioPreview(
-        recommendation.bestMatchingOffering.offeringId,
-      );
+      const result = await fetchRecommendationAudioPreview(targetOffering.offeringId);
       setPreview(result);
       if (result === null) {
         setPreviewError("No samples available for this offering.");
@@ -415,15 +786,27 @@ function RecommendationItem({
       className="border border-gray-200 rounded-md p-3 space-y-2"
       data-testid="matchmaker-recommendation-item"
       data-recommendation-index={index}
-      data-recommendation-id={recommendation.bestMatchingOffering.offeringId}
+      data-recommendation-id={targetOffering.offeringId}
+      // M2 (#87) Finding 8 (5th review): the row is highlighted
+      // when the saved offering is in either `bestMatchingOffering`
+      // or `additionalMatchingOfferings`. The `findSavedOfferingId`
+      // helper computes the same lookup; we use it here so the
+      // `aria-current` and the visual ring both fire when the
+      // saved offering is in the additional set (not just the
+      // best matching set).
+      data-matchmaker-highlighted={
+        findSavedOfferingId(recommendation, highlightedOfferingId) !== null ? "true" : "false"
+      }
+      aria-current={
+        findSavedOfferingId(recommendation, highlightedOfferingId) !== null ? "true" : undefined
+      }
     >
       <div>
         <p className="text-sm font-medium text-gray-900">
-          #{index} {recommendation.professionalName} — {recommendation.bestMatchingOffering.title}
+          #{index} {recommendation.professionalName} — {targetOffering.title}
         </p>
         <p className="text-xs text-gray-600">
-          {recommendation.bestMatchingOffering.primaryCategory.name} ·{" "}
-          {recommendation.bestMatchingOffering.serviceMode} · based in{" "}
+          {targetOffering.primaryCategory.name} · {targetOffering.serviceMode} · based in{" "}
           {recommendation.seller.basedIn.countryCode}
           {recommendation.seller.basedIn.city ? `, ${recommendation.seller.basedIn.city}` : ""}
         </p>
@@ -434,7 +817,7 @@ function RecommendationItem({
           className="list-disc list-inside text-xs text-gray-700"
           data-testid="matchmaker-explanation-list"
         >
-          {recommendation.explanations.map((entry, i) => (
+          {targetEvidence.explanations.map((entry, i) => (
             <li
               key={`${entry.kind}-${i}`}
               data-testid="matchmaker-explanation-item"
@@ -445,17 +828,20 @@ function RecommendationItem({
           ))}
         </ul>
         <p className="text-xs text-gray-700 mt-1" data-testid="matchmaker-match-reason">
-          {recommendation.matchReason}
+          {targetEvidence.matchReason}
         </p>
       </div>
       {/* BG7 inline audio preview surface. The toggle is a plain
           button the focused UI test clicks; the player is a
           SoundHub-owned in-app playback URL the browser renders as
-          `<audio src>` without inspecting its internals. */}
+          `<audio src>` without inspecting its internals. The
+          preview surface targets the row's `targetOffering` so
+          the audio the buyer hears matches the offering the Send
+          project request will create (Finding 17). */}
       <div
         className="space-y-1"
         data-testid="matchmaker-recommendation-audio"
-        data-offering-id={recommendation.bestMatchingOffering.offeringId}
+        data-offering-id={targetOffering.offeringId}
       >
         <button
           type="button"
@@ -508,11 +894,11 @@ function RecommendationItem({
           type="button"
           onClick={onInvite}
           disabled={disabled || submitting}
-          className="bg-blue-600 text-white px-3 py-1.5 rounded-md text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
-          data-testid="matchmaker-invite-button"
-          data-offering-id={recommendation.bestMatchingOffering.offeringId}
+          className="bg-coral text-white px-3 py-1.5 rounded-md text-sm font-semibold hover:bg-coral-hover disabled:opacity-50 transition-colors"
+          data-testid="matchmaker-send-project-request"
+          data-offering-id={targetOffering.offeringId}
         >
-          {submitting ? "Inviting…" : "Select & invite"}
+          {submitting ? "Inviting…" : "Send project request"}
         </button>
       </div>
     </li>

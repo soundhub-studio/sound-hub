@@ -127,9 +127,19 @@ describe("IntentPage — M2 #83 capability-only contract (#83 re-revision)", () 
       /\/workspace\/switch\?target=/.test(source),
       "switch link includes the `target` parameter",
     );
+    // The switch link's return parameter is now derived from a
+    // `switchReturn` variable (M2 #87 Finding 9: the return must
+    // route through /workspace/intent so the human re-presents
+    // their intent choice before landing on the original return).
+    // The post-switch destination still preserves the validated
+    // `?return=` value as the inner intent return.
     assert.ok(
-      /validatedReturnTo\s*\?\s*`&return=/.test(source),
-      "switch link carries the validated `?return=` forward",
+      /switchReturn/.test(source),
+      "switch link MUST derive a switch return target rather than passing validatedReturnTo directly",
+    );
+    assert.ok(
+      /\/workspace\/intent\?return=/.test(source),
+      "switch return MUST be threaded through /workspace/intent so intent is never bypassed",
     );
   });
 
@@ -468,6 +478,84 @@ describe("Shell — capability-truthful destinations (§4 / P1-005 / P1-004)", (
     assert.ok(
       /capabilities\.includes\("Buyer"\)\s*\|\|\s*capabilities\.includes\("Seller"\)/.test(source),
       "Shell MUST expose Deals when Buyer OR Seller capability is present",
+    );
+  });
+
+  test("Finding 8 — Buyer-only branch exposes a Continue link when validatedReturnTo is set", () => {
+    const source = readFile("workspace/intent/page.tsx");
+    // The skip-to-return link MUST be rendered when the user
+    // already has a capability (Buyer-only or Seller-only) AND
+    // validatedReturnTo is set. The M2 #87 Finding 12
+    // refinement further gates this on `isBuyer` when the return
+    // is to /matchmaker, but the Buyer-only-or-Seller-only
+    // capability floor is the original Finding 8 contract.
+    //
+    // The gate is now centralised into `skipLinkEligible` (a
+    // named variable) so the JSX reads the named gate rather
+    // than an inline expression. The test pins the existence of
+    // that named gate.
+    assert.ok(
+      /skipLinkEligible/.test(source),
+      "intent page MUST centralize skip-link eligibility into a named gate (the Finding 12 refinement reads isBuyer through this gate)",
+    );
+    assert.ok(
+      /data-testid="intent-skip-to-return"/.test(source),
+      "intent page MUST render the skip-to-return link with a stable testid for buyer-flow e2e coverage",
+    );
+    assert.ok(
+      /href=\{validatedReturnTo\}/.test(source),
+      "skip-to-return link MUST use the validatedReturnTo href so the buyer-flow continuation is honored",
+    );
+  });
+
+  // M2 (#87) P2 — Codex 4th review Finding 12. The
+  // "Continue without changing capabilities" link was exposed
+  // to Seller-only Workspaces heading to /matchmaker. A
+  // Seller-only Workspace cannot use /matchmaker, so following
+  // the link lands the buyer on the matchmaker's no-Buyer
+  // dead-end. The page must gate the skip link on isBuyer when
+  // the return target is /matchmaker. For other return targets
+  // (e.g. /dashboard), the original behavior is preserved:
+  // any partial-capability Workspace can skip.
+  test("Finding 12 — skip link is gated on isBuyer when the return target is /matchmaker", () => {
+    const source = readFile("workspace/intent/page.tsx");
+    assert.ok(
+      /isMatchmakerReturn/.test(source) ||
+        /validatedReturnTo\.startsWith\("\/matchmaker"\)/.test(source),
+      "intent page MUST detect /matchmaker as a return target that requires Buyer capability",
+    );
+    assert.ok(
+      /isBuyer\s*\|\|\s*!isMatchmakerReturn/.test(source),
+      "skip link MUST be eligible only for Buyer-capable Workspaces when returning to /matchmaker",
+    );
+    // The skip link is rendered from the new `skipLinkEligible`
+    // gate (the prior inline condition was too permissive for
+    // /matchmaker returns).
+    assert.ok(
+      /skipLinkEligible/.test(source),
+      "intent page MUST centralize skip-link eligibility into a named gate",
+    );
+  });
+
+  // M2 (#87) P2 — Codex 4th review Finding 9. The previous
+  // switch link used `&return=${validatedReturnTo}` directly,
+  // which sent the post-switch navigation straight to
+  // /matchmaker and skipped intent entirely. The page now
+  // routes the switch through /workspace/intent so the human
+  // re-presents their intent choice before landing on the
+  // original return. This is the only path that prevents a
+  // non-Personal acting Workspace from bypassing intent.
+  test("Finding 9 — switch link routes through /workspace/intent to preserve the intent round-trip", () => {
+    const source = readFile("workspace/intent/page.tsx");
+    // The switch return must be derived, not raw validatedReturnTo.
+    assert.ok(
+      /switchReturn/.test(source),
+      "intent page MUST derive a switch return target that routes through /workspace/intent",
+    );
+    // The switch return must include /workspace/intent in the URL.
+    assert.ok(
+      /\/workspace\/intent\?return=/.test(source),
+      "switch return MUST include /workspace/intent as the post-switch destination",
     );
   });
 });

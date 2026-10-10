@@ -1895,6 +1895,15 @@ export const postCommandRouteValuesV1 = [
   // resume the editor under a stale Buyer actor.
   "/seller/profile/edit",
   "/seller/profile/review",
+  // M2 (#87): Matchmaker. The route is open (no capability gate) so
+  // anonymous discovery on /talent can route through /login →
+  // /matchmaker without requiring Buyer capability on the return
+  // destination. The substantive buyer-flow state (which offering to
+  // highlight, which brief/filter to pre-fill) rides in a localStorage
+  // record keyed by the seller-profile-pending-edits seam pattern;
+  // the URL marker `?from=talent` is a routing hint, not a contract
+  // surface, and may be stripped by the bounded return resolver.
+  "/matchmaker",
 ] as const;
 export type PostCommandRouteV1 = (typeof postCommandRouteValuesV1)[number];
 
@@ -2081,13 +2090,37 @@ export type ProjectBriefNonSearchRequirementsV1 = z.infer<
 // browser and the Matchmaker service. It carries the acting
 // Workspace identifier (so the route can revalidate membership),
 // the original brief text, and an optional non-search requirements
-// override. Required + preferred criteria are NOT supplied by the
-// buyer; they are produced by the AI boundary (or its deterministic
-// fallback) and persisted alongside the brief.
+// override.
+//
+// M2 (#87) Codex 4th review Finding 8: the matchmaker brief
+// submission now accepts optional `required` and `preferred`
+// criteria so the M1 strict required filters can be preserved
+// across the /talent → /matchmaker recovery round-trip without
+// the AI boundary re-interpreting them. When the buyer supplies
+// `required`, the route applies it as-is — the AI never relaxes
+// or rewrites a buyer-supplied hard constraint. The buyer-
+// supplied criteria are not a free-form override; they round-
+// trip through the shared search schema so the same persistence
+// contract (`talentSearchRequiredCriteriaV1Schema` and
+// `talentSearchPreferredCriteriaV1Schema`) governs what survives.
+// The AI is still invoked for the natural-language brief text
+// to derive any non-supplied axes (e.g. preferred axes from the
+// query), but the supplied required axes win over the AI output.
 export const submitBriefRequestV1Schema = z
   .object({
     actingWorkspaceId: z.string().min(1).max(128),
     briefText: projectBriefTextV1Schema,
+    // M2 (#87) Finding 8: optional buyer-supplied strict required
+    // criteria. When present, the route applies them verbatim —
+    // the AI never relaxes a buyer-supplied hard axis. The fields
+    // round-trip through the shared `talentSearch*CriteriaV1Schema`
+    // so the schema (not the buyer) decides which axes survive.
+    required: talentSearchRequiredCriteriaV1Schema.optional(),
+    // M2 (#87) Finding 8: optional buyer-supplied preferred
+    // criteria. When present, the route applies them as the
+    // preferred axes alongside whatever the AI derives from the
+    // brief text. The buyer is never forced to set them.
+    preferred: talentSearchPreferredCriteriaV1Schema.optional(),
     // Optional buyer-supplied non-search requirements. When absent
     // the AI boundary (or fallback) derives them from the brief.
     nonSearchRequirements: projectBriefNonSearchRequirementsV1Schema,
