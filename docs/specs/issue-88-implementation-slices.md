@@ -8,7 +8,7 @@
 
 ## Current review target
 
-**CURRENT REVIEW TARGET: `88E`**
+**CURRENT REVIEW TARGET: `88F` (DEFERRED — see completion notes)**
 
 Update this line only after the current slice has:
 
