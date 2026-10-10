@@ -470,16 +470,26 @@ export class PrismaProjectRequestRepository implements ProjectRequestRepository 
     // invocation) returns the same resolved value. The cache
     // is reset for every new accept attempt, so different
     // accepts do not share state.
+    //
+    // M2 (#88) Codex finding (post 8d1ac3b): the original
+    // producer is captured once; the memoizing wrapper is
+    // constructed only when the producer is actually a
+    // function. Both `null` and `undefined` (the two ways a
+    // caller can omit the field on the optional
+    // `produceInitialTermsVersionDraft?` input) are treated as
+    // absent and the wrapper is `null` — the use case closure
+    // is then responsible for any fallback path.
+    const originalProducer = input.produceInitialTermsVersionDraft;
+    const hasProducer = originalProducer !== null && originalProducer !== undefined;
     let cachedDraftPromise: Promise<InitialTermsVersionDraft> | null = null;
-    const memoizedProducer: (() => Promise<InitialTermsVersionDraft>) | null =
-      input.produceInitialTermsVersionDraft === null
-        ? null
-        : () => {
-            if (cachedDraftPromise === null) {
-              cachedDraftPromise = input.produceInitialTermsVersionDraft!();
-            }
-            return cachedDraftPromise;
-          };
+    const memoizedProducer: (() => Promise<InitialTermsVersionDraft>) | null = hasProducer
+      ? () => {
+          if (cachedDraftPromise === null) {
+            cachedDraftPromise = originalProducer();
+          }
+          return cachedDraftPromise;
+        }
+      : null;
     const memoizedInput: RespondProjectRequestTransactionInput = {
       ...input,
       produceInitialTermsVersionDraft: memoizedProducer,

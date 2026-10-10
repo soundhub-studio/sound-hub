@@ -150,7 +150,7 @@ test("bounded P2034 retry memoizes the AI draft thunk across retries (one adapte
   const wrappedRepo = new PrismaProjectRequestRepository(proxy);
 
   let aiCalls = 0;
-  const producer = async (): Promise<{
+  const producer: () => Promise<{
     scope: string;
     deliverables: ReadonlyArray<{ title: string; description: string }>;
     schedule: { startDate: string; endDate: string; deliveryDays: number };
@@ -161,7 +161,7 @@ test("bounded P2034 retry memoizes the AI draft thunk across retries (one adapte
     aiProvider: "managed" | "deterministic-fallback";
     aiModelId: string | null;
     aiFallbackUsed: boolean;
-  }> {
+  }> = () => {
     aiCalls += 1;
     return Promise.resolve({
       scope: "Memoized draft.",
