@@ -461,6 +461,16 @@ export const apiErrorCodeV1Schema = z.enum([
   // Transient marketplace-busy envelope. Maps to 503 so the buyer or
   // seller can retry the request without changing the payload.
   "PROJECT_REQUEST_UNAVAILABLE",
+  // M2 (#88): the AI candidate for the initial TermsVersion (the
+  // unapproved row persisted alongside the new Deal on a successful
+  // accept) failed the strict `bg5ProposedTermsV1Schema` runtime
+  // validation. 400 Bad Request — a malformed AI candidate must not
+  // produce a Deal; the transaction rolls back with no state change.
+  // This is distinct from `BG5_TERMS_DRAFT_INVALID` (which covers
+  // post-accept replacement drafts) because the row is being
+  // created as part of the accept command, not via
+  // /api/deals/:id/terms-draft.
+  "PROJECT_REQUEST_TERMS_DRAFT_INVALID",
   // Generic ProjectRequest internal-failure envelope. Maps to 500.
   // Used only when the handler catches an exception that does not
   // match a typed ProjectRequestError; the underlying message is
@@ -2841,15 +2851,6 @@ export const respondProjectRequestRequestV1Schema = z
   .strict();
 export type RespondProjectRequestRequestV1 = z.infer<typeof respondProjectRequestRequestV1Schema>;
 
-export const acceptProjectRequestResponseV1Schema = z
-  .object({
-    ok: z.literal(true),
-    projectRequest: projectRequestPublicV1Schema,
-    deal: dealPublicV1Schema,
-  })
-  .strict();
-export type AcceptProjectRequestResponseV1 = z.infer<typeof acceptProjectRequestResponseV1Schema>;
-
 export const declineProjectRequestResponseV1Schema = z
   .object({
     ok: z.literal(true),
@@ -3125,6 +3126,39 @@ export const bg5ApproveTermsResponseV1Schema = z
   })
   .strict();
 export type Bg5ApproveTermsResponseV1 = z.infer<typeof bg5ApproveTermsResponseV1Schema>;
+
+// ===========================================================================
+// M2 (#88) — extended accept ProjectRequest response shape.
+//
+// Per the reconciled M2 specification (and ticket #88), seller
+// acceptance atomically creates exactly one Negotiating Deal AND one
+// AI-drafted, unapproved current TermsVersion. The accept response
+// envelope carries the TermsVersion row alongside the Deal so the
+// browser can route the seller to the Negotiating Deal detail page
+// without a second fetch.
+//
+// This declaration lives here rather than alongside the original
+// `acceptProjectRequestResponseV1Schema` because it references
+// `bg5TermsVersionPublicV1Schema`, which is declared further down
+// in this file. JavaScript module hoisting does NOT cross the
+// `export const` statement boundary so the reference has to follow
+// the dependency order.
+// ===========================================================================
+
+export const acceptProjectRequestResponseV1Schema = z
+  .object({
+    ok: z.literal(true),
+    projectRequest: projectRequestPublicV1Schema,
+    deal: dealPublicV1Schema,
+    // The AI-drafted, unapproved current TermsVersion the accept
+    // transaction persisted atomically alongside the new Deal.
+    // Same DTO as the Deal view's `currentTermsVersion` so the
+    // browser can render the row immediately without a second round
+    // trip.
+    initialTermsVersion: bg5TermsVersionPublicV1Schema,
+  })
+  .strict();
+export type AcceptProjectRequestResponseV1 = z.infer<typeof acceptProjectRequestResponseV1Schema>;
 
 // ===========================================================================
 // Milestone 2 (#88) — Personal-Workspace DealApprover JIT permission setup

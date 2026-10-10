@@ -44,6 +44,65 @@ import type {
   SellerEligibilitySnapshot,
 } from "./project-request-authorization-policy.js";
 
+// ---------- M2 (#88) — initial TermsVersion draft ----------
+//
+// The seller-accept command atomically creates exactly one
+// Negotiating Deal AND exactly one AI-drafted, unapproved current
+// TermsVersion (ticket #88 acceptance criterion: "Seller acceptance
+// atomically and retry-safely creates exactly one Negotiating Deal
+// and AI-drafted, unapproved current TermsVersion"). The application
+// layer is responsible for generating the AI proposal; the
+// repository is responsible for FOR UPDATE-locking the Deal + the
+// `(dealId, version)` uniqueness and persisting the row inside the
+// same transaction that creates the Deal. A retry that re-enters
+// the same accept payload converges on the same TermsVersion row
+// because the (dealId, version) UNIQUE index rejects duplicates.
+//
+// The shape mirrors `PersistDraftTermsInput["proposedTerms"]` in
+// `apps/api/src/deal-terms/deal-terms.repository.ts`. We deliberately
+// do NOT import the DealTerms contract here so the ProjectRequest
+// repository seam stays a single-file module — the application layer
+// constructs the validated proposal before opening the transaction.
+export interface InitialTermsVersionDraft {
+  readonly scope: string;
+  readonly deliverables: ReadonlyArray<{
+    readonly title: string;
+    readonly description: string;
+  }>;
+  readonly schedule: {
+    readonly startDate: string;
+    readonly endDate: string;
+    readonly deliveryDays: number;
+  };
+  readonly price: { readonly amountMinor: number; readonly currency: "USD" };
+  readonly revisionAllowance: number;
+  readonly rightsSummary: string;
+  readonly fundingDeadlineAt?: string;
+  readonly aiProvider: "managed" | "deterministic-fallback";
+  readonly aiModelId: string | null;
+  readonly aiFallbackUsed: boolean;
+}
+
+export interface PersistedTermsVersion {
+  readonly id: string;
+  readonly dealId: string;
+  readonly version: number;
+  readonly scope: string;
+  readonly deliverablesJson: unknown;
+  readonly scheduleJson: unknown;
+  readonly priceAmountMinor: number;
+  readonly priceCurrency: string;
+  readonly revisionAllowance: number;
+  readonly rightsSummary: string;
+  readonly fundingDeadlineAt: Date | null;
+  readonly aiProvider: string;
+  readonly aiModelId: string | null;
+  readonly aiFallbackUsed: boolean;
+  readonly draftedByUserId: string | null;
+  readonly draftedAt: Date;
+  readonly createdAt: Date;
+}
+
 export interface PersistedProjectRequest {
   readonly id: string;
   readonly buyerWorkspaceId: string;
@@ -93,6 +152,16 @@ export interface PersistAcceptProjectRequestInput {
   readonly projectRequestId: string;
   readonly sellerDecisionByUserId: string;
   readonly now: Date;
+  /**
+   * M2 (#88): the AI-drafted TermsVersion proposal persisted alongside
+   * the new Deal in the SAME transaction. Required on accept; absent
+   * on decline. The application layer validates the candidate against
+   * `bg5ProposedTermsV1Schema` BEFORE handing it to the repository;
+   * the repository does NOT validate it. The transaction persists the
+   * row with monotonic version 1; the `(dealId, version)` UNIQUE
+   * index is the durable convergence key for same-attempt retry.
+   */
+  readonly initialTermsVersionDraft: InitialTermsVersionDraft;
 }
 
 export interface PersistDeclineProjectRequestInput {
@@ -186,6 +255,13 @@ export interface RespondProjectRequestTransactionInput {
 export interface AcceptProjectRequestResult {
   readonly projectRequest: PersistedProjectRequest;
   readonly deal: PersistedDeal;
+  /**
+   * M2 (#88): the AI-drafted, unapproved current TermsVersion the
+   * accept transaction persisted atomically alongside the Deal. The
+   * row is unapproved by construction — accepting a ProjectRequest
+   * is NOT TermsVersion approval (ticket #88 acceptance criterion).
+   */
+  readonly initialTermsVersion: PersistedTermsVersion;
 }
 
 // ---------- interface ----------

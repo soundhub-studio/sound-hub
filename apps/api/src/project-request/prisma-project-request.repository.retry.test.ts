@@ -93,7 +93,15 @@ function withTransactionFailureProxy(underlying: PrismaClient, failCount: number
 }
 
 test("bounded P2034 retry success: the helper retries on P2034 and succeeds on the next attempt", async () => {
-  // Reset the BG4 rows so the test starts clean.
+  // Reset the BG4 rows so the test starts clean. M2 (#88) initial
+  // TermsVersion rows hold a RESTRICT FK to deals; remove them
+  // first.
+  await prisma.dealApproval.deleteMany({
+    where: { termsVersion: { deal: { projectBriefId: fixture.brief.id } } },
+  });
+  await prisma.termsVersion.deleteMany({
+    where: { deal: { projectBriefId: fixture.brief.id } },
+  });
   await prisma.deal.deleteMany({ where: { projectBriefId: fixture.brief.id } });
   await prisma.projectRequest.deleteMany({ where: { projectBriefId: fixture.brief.id } });
 
@@ -121,7 +129,15 @@ test("bounded P2034 retry success: the helper retries on P2034 and succeeds on t
 });
 
 test("bounded P2034 retry exhaustion: after the budget the helper returns CONCURRENCY_RETRY_EXHAUSTED with no partial state", async () => {
-  // Reset the BG4 rows so the test starts clean.
+  // Reset the BG4 rows so the test starts clean. M2 (#88) initial
+  // TermsVersion rows hold a RESTRICT FK to deals; remove them
+  // first.
+  await prisma.dealApproval.deleteMany({
+    where: { termsVersion: { deal: { projectBriefId: fixture.brief.id } } },
+  });
+  await prisma.termsVersion.deleteMany({
+    where: { deal: { projectBriefId: fixture.brief.id } },
+  });
   await prisma.deal.deleteMany({ where: { projectBriefId: fixture.brief.id } });
   await prisma.projectRequest.deleteMany({ where: { projectBriefId: fixture.brief.id } });
 

@@ -62,6 +62,7 @@ import type {
   DecideResult,
   PersistedDeal,
   PersistedProjectRequest,
+  PersistedTermsVersion,
   ProjectRequestRepository,
   RespondProjectRequestTransactionInput,
   RespondProjectRequestUseCase,
@@ -553,11 +554,57 @@ export class PrismaProjectRequestRepository implements ProjectRequestRepository 
                 projectRequestId: updated.id,
               },
             });
+            // M2 (#88): atomically persist the AI-drafted, unapproved
+            // initial TermsVersion (v1) inside the SAME transaction
+            // that creates the Deal. The (dealId, version) UNIQUE
+            // index is the durable convergence key for same-attempt
+            // retry: a re-entrant accept that re-uses the same
+            // already-created Deal cannot create a second TermsVersion
+            // because the unique index rejects the duplicate INSERT.
+            // The draft flows from the use-case closure's accept
+            // verdict (the application owns the AI boundary + strict
+            // validation) — the repository never decides what to
+            // persist, only that the row is persisted atomically.
+            const draft = outcome.input.initialTermsVersionDraft;
+            if (!draft) {
+              // Defensive guard: the service must supply a draft
+              // candidate via the use-case closure. If it did not,
+              // the transaction rolls back with no state change.
+              throw new Error(
+                "Internal error: accept use-case verdict lacked an initial TermsVersion draft.",
+              );
+            }
+            const createdTv = await tx.termsVersion.create({
+              data: {
+                dealId: deal.id,
+                version: 1,
+                scope: draft.scope,
+                deliverablesJson: draft.deliverables.map((d) => ({
+                  title: d.title,
+                  description: d.description,
+                })),
+                scheduleJson: draft.schedule,
+                priceAmountMinor: draft.price.amountMinor,
+                priceCurrency: draft.price.currency,
+                revisionAllowance: draft.revisionAllowance,
+                rightsSummary: draft.rightsSummary,
+                fundingDeadlineAt: draft.fundingDeadlineAt
+                  ? new Date(draft.fundingDeadlineAt)
+                  : null,
+                aiProvider: draft.aiProvider,
+                aiModelId: draft.aiModelId,
+                aiFallbackUsed: draft.aiFallbackUsed,
+                draftedByUserId: input.userAccountId,
+                draftedAt: input.now,
+              },
+            });
+            const initialTermsVersion = toPersistedTermsVersion(createdTv);
             return {
               ok: true as const,
               value: {
                 projectRequest: toPersisted(updated),
                 deal: toPersistedDeal(deal),
+                initialTermsVersion,
               },
             };
           }
@@ -874,6 +921,51 @@ function toPersistedDeal(row: {
     projectRequestId: row.projectRequestId,
     status: toDealStatus(row.status),
     activatedAt: row.activatedAt,
+    createdAt: row.createdAt,
+  };
+}
+
+// M2 (#88): map a freshly created TermsVersion row to the strict
+// persisted-shape used by the accept transaction. Mirrors the shape
+// the DealTermsRepository prisma adapter emits so the service layer
+// can project it through `toPublicInitialTermsVersion` without
+// reading the row again.
+function toPersistedTermsVersion(row: {
+  readonly id: string;
+  readonly dealId: string;
+  readonly version: number;
+  readonly scope: string;
+  readonly deliverablesJson: unknown;
+  readonly scheduleJson: unknown;
+  readonly priceAmountMinor: number;
+  readonly priceCurrency: string;
+  readonly revisionAllowance: number;
+  readonly rightsSummary: string;
+  readonly fundingDeadlineAt: Date | null;
+  readonly aiProvider: string;
+  readonly aiModelId: string | null;
+  readonly aiFallbackUsed: boolean;
+  readonly draftedByUserId: string | null;
+  readonly draftedAt: Date;
+  readonly createdAt: Date;
+}): PersistedTermsVersion {
+  return {
+    id: row.id,
+    dealId: row.dealId,
+    version: row.version,
+    scope: row.scope,
+    deliverablesJson: row.deliverablesJson,
+    scheduleJson: row.scheduleJson,
+    priceAmountMinor: row.priceAmountMinor,
+    priceCurrency: row.priceCurrency,
+    revisionAllowance: row.revisionAllowance,
+    rightsSummary: row.rightsSummary,
+    fundingDeadlineAt: row.fundingDeadlineAt,
+    aiProvider: row.aiProvider,
+    aiModelId: row.aiModelId,
+    aiFallbackUsed: row.aiFallbackUsed,
+    draftedByUserId: row.draftedByUserId,
+    draftedAt: row.draftedAt,
     createdAt: row.createdAt,
   };
 }

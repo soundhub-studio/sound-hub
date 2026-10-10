@@ -145,6 +145,13 @@ export function mapStatus(code: ApiErrorCodeV1): number {
       // the write. The caller can retry the same payload without
       // changing the request.
       return 503;
+    case "PROJECT_REQUEST_TERMS_DRAFT_INVALID":
+      // M2 (#88): the AI candidate for the initial TermsVersion
+      // (persisted atomically alongside the new Deal on accept)
+      // failed the strict `bg5ProposedTermsV1Schema` validation.
+      // 400 Bad Request — a malformed AI candidate must not produce
+      // a Deal. The transaction rolls back with no state change.
+      return 400;
     case "PROJECT_REQUEST_FAILED":
       // 500 Internal Server Error. Used only when the handler
       // catches an exception outside the typed ProjectRequestError

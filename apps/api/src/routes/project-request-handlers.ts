@@ -215,7 +215,12 @@ export function acceptProjectRequest(deps: ProjectRequestRouteDeps) {
         res,
         200,
         acceptProjectRequestResponseV1Schema,
-        { ok: true, projectRequest: result.projectRequest, deal: result.deal },
+        {
+          ok: true,
+          projectRequest: result.projectRequest,
+          deal: result.deal,
+          initialTermsVersion: result.initialTermsVersion,
+        },
         requestId,
         "accept",
       );

@@ -31,6 +31,7 @@ import type {
   DecideResult,
   PersistedDeal,
   PersistedProjectRequest,
+  PersistedTermsVersion,
   ProjectRequestRepository,
   RespondProjectRequestTransactionInput,
   RespondProjectRequestUseCase,
@@ -89,6 +90,13 @@ export interface WorkspaceSnapshotSeed {
 export class InMemoryProjectRequestRepository implements ProjectRequestRepository {
   private readonly requests = new Map<string, PersistedProjectRequest>();
   private readonly deals = new Map<string, PersistedDeal>();
+  /**
+   * M2 (#88): in-memory TermsVersion map mirroring the (dealId, version)
+   * uniqueness and persistence shape the Prisma adapter enforces.
+   * The accept transaction seeds one v1 row per Deal on the same
+   * logical commit as the Deal itself.
+   */
+  private readonly termsVersions = new Map<string, PersistedTermsVersion>();
   private readonly workspaces = new Map<string, WorkspaceSnapshotSeed>();
   private readonly memberships = new Map<string, MembershipSnapshotSeed>();
   private readonly sellerProfiles = new Map<string, SellerProfileSnapshotSeed>();
@@ -273,7 +281,52 @@ export class InMemoryProjectRequestRepository implements ProjectRequestRepositor
           createdAt: new Date(),
         };
         this.deals.set(deal.id, deal);
-        return Promise.resolve({ ok: true, value: { projectRequest: updated, deal } });
+        // M2 (#88): atomically persist the AI-drafted, unapproved
+        // initial TermsVersion (v1) inside the SAME logical commit
+        // as the Deal. The (dealId, version) UNIQUE check below
+        // mirrors the durable convergence key the Prisma adapter
+        // enforces.
+        const draft = outcome.input.initialTermsVersionDraft;
+        if (!draft) {
+          // Defensive guard: the service must supply a draft
+          // candidate via the use-case closure. If it did not,
+          // the transaction rolls back with no state change.
+          throw new Error(
+            "In-memory accept use-case verdict lacked an initial TermsVersion draft.",
+          );
+        }
+        for (const tv of this.termsVersions.values()) {
+          if (tv.dealId === deal.id && tv.version === 1) {
+            return Promise.resolve({ ok: false, reason: "ALREADY_RESPONDED" });
+          }
+        }
+        const initialTermsVersion: PersistedTermsVersion = {
+          id: `tv-${randomUUID()}`,
+          dealId: deal.id,
+          version: 1,
+          scope: draft.scope,
+          deliverablesJson: draft.deliverables.map((d) => ({
+            title: d.title,
+            description: d.description,
+          })),
+          scheduleJson: draft.schedule,
+          priceAmountMinor: draft.price.amountMinor,
+          priceCurrency: draft.price.currency,
+          revisionAllowance: draft.revisionAllowance,
+          rightsSummary: draft.rightsSummary,
+          fundingDeadlineAt: draft.fundingDeadlineAt ? new Date(draft.fundingDeadlineAt) : null,
+          aiProvider: draft.aiProvider,
+          aiModelId: draft.aiModelId,
+          aiFallbackUsed: draft.aiFallbackUsed,
+          draftedByUserId: input.userAccountId,
+          draftedAt: input.now,
+          createdAt: new Date(),
+        };
+        this.termsVersions.set(initialTermsVersion.id, initialTermsVersion);
+        return Promise.resolve({
+          ok: true,
+          value: { projectRequest: updated, deal, initialTermsVersion },
+        });
       }
 
       // Decline branch.

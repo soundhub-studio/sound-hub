@@ -57,6 +57,15 @@ after(async () => {
 });
 
 beforeEach(async () => {
+  // M2 (#88) initial TermsVersion rows hold a RESTRICT FK to deals;
+  // remove them first so the deal deleteMany below does not trip the
+  // constraint.
+  await prismaA.dealApproval.deleteMany({
+    where: { termsVersion: { deal: { projectBriefId: fixture.brief.id } } },
+  });
+  await prismaA.termsVersion.deleteMany({
+    where: { deal: { projectBriefId: fixture.brief.id } },
+  });
   await prismaA.deal.deleteMany({
     where: { projectBriefId: fixture.brief.id },
   });
