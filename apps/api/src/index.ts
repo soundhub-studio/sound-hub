@@ -41,6 +41,10 @@ import { PrismaProjectBriefRepository } from "./matchmaker/prisma-project-brief.
 import { PrismaProjectRequestRepository } from "./project-request/prisma-project-request.repository.js";
 import { PrismaDealTermsRepository } from "./deal-terms/prisma-deal-terms.repository.js";
 import { DealTermsService } from "./deal-terms/deal-terms.service.js";
+import { DealApproverService } from "./deal-approver/deal-approver.service.js";
+import { PrismaDealApproverRepository } from "./deal-approver/prisma-deal-approver.repository.js";
+import type { DealApproverRepository } from "./deal-approver/deal-approver.repository.js";
+import { createDealApproverRouter } from "./routes/deal-approvers.js";
 import { PrismaDealListRepository } from "./deal-list/prisma-deal-list.repository.js";
 import { DealListService } from "./deal-list/deal-list.service.js";
 import { PrismaSellerProfileRepository } from "./repositories/prisma-seller-profile.repository.js";
@@ -67,7 +71,7 @@ import {
   type BuiltAiAdapters,
 } from "./matchmaker/ai-adapter-factory.js";
 import type { SmokeResult } from "./identity/managed-identity-adapter.js";
-import { buildSafeError, writeSafeError } from "./lib/errors.js";
+import { buildSafeError, generateRequestId, writeSafeError } from "./lib/errors.js";
 import { getRequestId, storeRequestId } from "./lib/request-id.js";
 
 export interface AppOptions {
@@ -153,6 +157,19 @@ export interface AppOptions {
    * from the repository.
    */
   readonly dealTermsService?: DealTermsService;
+  /**
+   * M2 (#88): override for the DealApprover repository. When
+   * supplied, the composition root does NOT construct the Prisma
+   * adapter; the override is served directly. Tests pass the
+   * in-memory adapter.
+   */
+  readonly dealApproverRepository?: DealApproverRepository;
+  /**
+   * M2 (#88): override for the DealApprover service. When supplied,
+   * the composition root uses this service instead of constructing
+   * one from the repository.
+   */
+  readonly dealApproverService?: DealApproverService;
   /**
    * Override for the Deal-discovery list repository (ticket #74).
    * When supplied, the composition root does NOT construct the Prisma
@@ -389,13 +406,21 @@ export function buildApp(options: AppOptions = {}): BuiltApp {
     new DealTermsService({
       dealTermsRepository,
       workspaceAuthorizationService,
-      // Wire the ProjectRequestRepository so `getDeal()` can derive
-      // the narrow `sellerConsent` projection from the associated
-      // ProjectRequest (ticket AC27). The read is fail-closed; a
-      // missing or non-Accepted ProjectRequest yields
-      // `sellerConsent: null` and the UI must not present false
-      // consent.
       projectRequestRepository,
+    });
+
+  // M2 (#88): DealApprover JIT permission setup service. The
+  // composition root owns the Prisma adapter; the service is the
+  // only boundary the route and tests depend on. Provisioning is
+  // capability-neutral, Personal-Workspace-scoped, and never
+  // creates a `DealApproval` (the approval command remains BG5's
+  // `recordApprovalInTransaction`).
+  const dealApproverRepository =
+    options.dealApproverRepository ?? new PrismaDealApproverRepository(prisma);
+  const dealApproverService =
+    options.dealApproverService ??
+    new DealApproverService({
+      dealApproverRepository,
     });
 
   // BG6 PaymentIntent + activation service. The composition root
@@ -531,6 +556,19 @@ export function buildApp(options: AppOptions = {}): BuiltApp {
     createProjectRequestRouter({
       authenticationService,
       projectRequestService,
+    }),
+  );
+  // M2 (#88): Personal-Workspace DealApprover JIT permission setup
+  // surface. The router wires the single `POST /api/deal-approvers`
+  // endpoint; the safe envelope collapses every authorization
+  // rejection to `DEAL_APPROVER_FORBIDDEN` (403) and never exposes
+  // private audit identifiers.
+  app.use(
+    "/api/deal-approvers",
+    createDealApproverRouter({
+      authenticationService,
+      dealApproverService,
+      generateRequestId,
     }),
   );
   // Ticket #74: the Deals collection route is registered BEFORE the
