@@ -9,9 +9,13 @@
 // module keeps its strict Next.js export surface (default + route
 // exports only).
 //
-// A `null` saved offeringId is treated as "no saved offering" so
+// A `null` savedOfferingId is treated as "no saved offering" so
 // the highlight lookup never matches an unrelated row.
-import type { MatchmakerRecommendationV1, PublicOfferingSummaryV1 } from "@soundhub/types";
+import type {
+  ExplanationEntryV1,
+  MatchmakerRecommendationV1,
+  PublicOfferingSummaryV1,
+} from "@soundhub/types";
 
 export function findSavedOfferingId(
   recommendation: MatchmakerRecommendationV1,
@@ -53,4 +57,87 @@ export function selectTargetOffering(
     }
   }
   return recommendation.bestMatchingOffering;
+}
+
+// M2 (#87) 7th review Finding 2 — Promoted-offering evidence
+// alignment. The recommendation DTO carries a single
+// `explanations` list and `matchReason` string derived from the
+// search engine's analysis of the best matching offering. When
+// the saved offering is in `additionalMatchingOfferings` (i.e.
+// the row is displaying a different offering than the search
+// ranked as best), the row MUST NOT render evidence derived
+// from the best matching offering alongside the promoted
+// offering's title, category, audio, and request target. The
+// evidence and match reason are re-derived from the promoted
+// offering's own fields so every element on the row describes
+// the same offering.
+//
+// When the saved offering is the best matching offering (or no
+// Talent recovery is present), the recommendation's existing
+// evidence is authoritative and is returned unchanged.
+export interface TargetEvidence {
+  readonly explanations: readonly ExplanationEntryV1[];
+  readonly matchReason: string;
+}
+
+export function selectTargetEvidence(
+  recommendation: MatchmakerRecommendationV1,
+  savedOfferingId: string | null,
+): TargetEvidence {
+  // No recovery, or the saved offering is the best matching
+  // offering — the recommendation's evidence is already aligned
+  // with the displayed offering. Return it as-is.
+  if (
+    savedOfferingId === null ||
+    recommendation.bestMatchingOffering.offeringId === savedOfferingId
+  ) {
+    return {
+      explanations: recommendation.explanations,
+      matchReason: recommendation.matchReason,
+    };
+  }
+  // The saved offering is in `additionalMatchingOfferings`.
+  // Derive per-offering evidence from the target's own fields
+  // so the explanations + match reason describe the same
+  // offering the row displays.
+  const target = selectTargetOffering(recommendation, savedOfferingId);
+  const explanations: ExplanationEntryV1[] = [
+    {
+      kind: "matched-offering-title",
+      label: `Matched offering: ${target.title}`,
+    },
+    {
+      kind: "matched-category-key",
+      label: `Listed under ${target.primaryCategory.name} (${target.primaryCategory.key})`,
+    },
+  ];
+  const matchReasonParts: string[] = [
+    `matched offering title: ${target.title}`,
+    `category: ${target.primaryCategory.name}`,
+  ];
+  if (target.genreTags.length > 0) {
+    explanations.push({
+      kind: "preferred-genre",
+      label: `Genre: ${target.genreTags.join(", ")}`,
+    });
+    matchReasonParts.push(`genre: ${target.genreTags.join(", ")}`);
+  }
+  if (target.serviceMode) {
+    matchReasonParts.push(`service mode: ${target.serviceMode}`);
+  }
+  if (target.serviceAreas.length > 0) {
+    const first = target.serviceAreas[0]!;
+    const city = first.city ?? "";
+    const area = `${city} ${first.countryCode}`.trim();
+    if (area.length > 0) {
+      explanations.push({
+        kind: "preferred-locality",
+        label: `Service area: ${area}`,
+      });
+    }
+  }
+  return {
+    explanations,
+    matchReason: matchReasonParts.join("; "),
+  };
 }

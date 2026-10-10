@@ -919,10 +919,15 @@ describe("BG3 Matchmaker page source contract", () => {
       /data-testid="matchmaker-explanation-item"/,
       "buyer page must render each explanation entry from the validated DTO",
     );
+    // M2 (#87) 7th review Finding 2: the rendered row drives
+    // its explanations off `targetEvidence.explanations` (which
+    // equals `recommendation.explanations` when no additional-
+    // offering promotion is in play). Either name drives the
+    // list off the validated DTO — no generated string.
     assert.match(
       source,
-      /recommendation\.explanations\.map\(/,
-      "buyer page must drive the explanations list off the DTO, not a generated string",
+      /targetEvidence\.explanations\.map/,
+      "buyer page must drive the explanations list off the validated DTO (via targetEvidence.explanations)",
     );
   });
 });
@@ -1096,6 +1101,87 @@ describe("M2 (#87) Matchmaker page — Talent continuation contract", () => {
     );
   });
 
+  // M2 (#87) 7th review Finding 1: every valid Talent
+  // continuation must initialize the Matchmaker brief with a
+  // truthful, schema-valid brief of at least the required
+  // minimum length (8 chars). A sole short criterion (e.g.
+  // primary category "mixing" or service mode "Remote") would
+  // otherwise produce a 6-char brief that fails the briefText
+  // schema. The page MUST use a prepositional form for single
+  // short parts so the joined text is ≥ 8 chars without
+  // inventing buyer requirements.
+  test("Finding 1 (7th review) — sole short criterion produces a prepositional form ≥ 8 chars", () => {
+    const source = readMatchmakerPage();
+    // The page MUST handle the "single part < 8 chars" case via
+    // a prepositional form. The form uses the saved criterion
+    // verbatim — no invented content like project names, dates,
+    // or unrelated sample copy.
+    assert.match(
+      source,
+      /in \$\{part\}/,
+      "matchmaker page MUST use `in ${part}` prepositional form for a sole short primary category (Finding 1)",
+    );
+    assert.match(
+      source,
+      /as \$\{part\}/,
+      "matchmaker page MUST use `as ${part}` prepositional form for a sole short service mode (Finding 1)",
+    );
+    // The page MUST short-circuit when the joined text is
+    // already ≥ 8 chars (no prepositional form needed for
+    // service-area-only or based-in-only or long category).
+    assert.match(
+      source,
+      /if \(part\.length >= 8\) return part/,
+      "matchmaker page MUST return the joined text as-is when it is already ≥ 8 chars (Finding 1 — no prepositional padding for long criteria)",
+    );
+  });
+
+  // M2 (#87) 7th review Finding 2: when the saved offering is
+  // promoted from `additionalMatchingOfferings`, the row's
+  // explanations + match reason MUST describe the promoted
+  // offering — not the row's best matching offering.
+  test("Finding 2 (7th review) — promoted-offering evidence is re-derived from the target's own fields", () => {
+    const source = readMatchmakerPage();
+    // The page MUST import selectTargetEvidence.
+    assert.match(
+      source,
+      /import[\s\S]*?findSavedOfferingId[\s\S]*?selectTargetEvidence[\s\S]*?selectTargetOffering[\s\S]*?from\s*["']\.\/find-saved-offering-id["']/,
+      "matchmaker page MUST import selectTargetEvidence (Finding 2 — promoted-offering evidence)",
+    );
+    // The page MUST accept a `targetEvidence: TargetEvidence`
+    // prop on `RecommendationItem`.
+    assert.match(
+      source,
+      /targetEvidence:\s*TargetEvidence/,
+      "RecommendationItem MUST accept a targetEvidence: TargetEvidence prop (Finding 2 — promoted-offering evidence)",
+    );
+    // The page MUST use `targetEvidence.explanations` and
+    // `targetEvidence.matchReason` for the rendered row, NOT
+    // `recommendation.explanations` / `recommendation.matchReason`
+    // (which are bound to the best matching offering).
+    assert.match(
+      source,
+      /targetEvidence\.explanations\.map/,
+      "RecommendationItem MUST render targetEvidence.explanations (Finding 2 — promoted-offering evidence)",
+    );
+    assert.match(
+      source,
+      /\{targetEvidence\.matchReason\}/,
+      "RecommendationItem MUST render targetEvidence.matchReason (Finding 2 — promoted-offering evidence)",
+    );
+    // A regression that re-introduces the recommendation's
+    // own explanations / matchReason in the rendered row fails
+    // these next two assertions.
+    assert.ok(
+      !/recommendation\.explanations\.map\(/.test(source),
+      "RecommendationItem MUST NOT render recommendation.explanations.map (the recommendation's explanations describe the best matching offering, not the target)",
+    );
+    assert.ok(
+      !/\{recommendation\.matchReason\}/.test(source),
+      "RecommendationItem MUST NOT render {recommendation.matchReason} (the recommendation's matchReason describes the best matching offering, not the target)",
+    );
+  });
+
   // M2 (#87) 5th review Finding 3: the saved offeringId is
   // located in either `bestMatchingOffering` or
   // `additionalMatchingOfferings` and is the one used by Send
@@ -1108,8 +1194,8 @@ describe("M2 (#87) Matchmaker page — Talent continuation contract", () => {
     // The page MUST import the helper from its own module.
     assert.match(
       source,
-      /import\s*\{\s*findSavedOfferingId\s*,\s*selectTargetOffering\s*\}\s*from\s*["']\.\/find-saved-offering-id["']/,
-      "matchmaker page MUST import findSavedOfferingId and selectTargetOffering from ./find-saved-offering-id (the helpers cannot be page-module exports)",
+      /import[\s\S]*?findSavedOfferingId[\s\S]*?selectTargetEvidence[\s\S]*?selectTargetOffering[\s\S]*?from\s*["']\.\/find-saved-offering-id["']/,
+      "matchmaker page MUST import findSavedOfferingId, selectTargetEvidence, and selectTargetOffering from ./find-saved-offering-id (the helpers cannot be page-module exports)",
     );
     // The page MUST use the helper to drive the highlight.
     assert.match(
@@ -1178,8 +1264,8 @@ describe("M2 (#87) Matchmaker page — Talent continuation contract", () => {
     // The page MUST import the new helper.
     assert.match(
       source,
-      /import\s*\{\s*findSavedOfferingId,\s*selectTargetOffering\s*\}\s*from\s*["']\.\/find-saved-offering-id["']/,
-      "matchmaker page MUST import selectTargetOffering from the helper module (Finding 17)",
+      /import[\s\S]*?findSavedOfferingId[\s\S]*?selectTargetEvidence[\s\S]*?selectTargetOffering[\s\S]*?from\s*["']\.\/find-saved-offering-id["']/,
+      "matchmaker page MUST import findSavedOfferingId, selectTargetEvidence, and selectTargetOffering from the helper module (Finding 17 + 7th review Finding 2)",
     );
     // The page MUST call `selectTargetOffering` per recommendation
     // so every row gets the correct target offering.

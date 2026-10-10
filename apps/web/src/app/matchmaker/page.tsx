@@ -56,7 +56,12 @@ import {
   clearTalentMatchmakerContext,
   readTalentMatchmakerContext,
 } from "../lib/talent-matchmaker-context";
-import { findSavedOfferingId, selectTargetOffering } from "./find-saved-offering-id";
+import {
+  findSavedOfferingId,
+  selectTargetEvidence,
+  selectTargetOffering,
+} from "./find-saved-offering-id";
+import type { TargetEvidence } from "./find-saved-offering-id";
 
 const EMPTY_FILTERS: RequiredFiltersValue = {
   primaryCategoryKey: "",
@@ -153,6 +158,30 @@ function composeBriefFromCriteria(filters: RequiredFiltersValue): string {
     parts.push(`service in ${serviceArea.countryCode}`);
   } else if (serviceArea.region.length > 0) {
     parts.push(`service in ${serviceArea.region}`);
+  }
+
+  // M2 (#87) 7th review Finding 1 — Recovered filter-only brief.
+  // A sole short criterion (e.g. primary category "mixing" =
+  // 6 chars; service mode "Remote" = 6 chars; "Hybrid" = 6 chars)
+  // produces a joined text under the briefText schema's 8-char
+  // minimum. Multi-criterion briefs are already ≥ 8 chars via
+  // comma-joining. For a single short criterion, use a
+  // prepositional form ("in mixing" / "as Remote") that does
+  // NOT invent buyer requirements — it just wraps the saved
+  // criteria in a copy-neutral grammatical structure. The
+  // prepositional form is also why the brief is NEVER padded
+  // with invented content: when the joined text is already
+  // ≥ 8 chars, it is returned as-is.
+  if (parts.length === 1) {
+    const part = parts[0]!;
+    if (part.length >= 8) return part;
+    if (filters.primaryCategoryKey.length > 0) return `in ${part}`;
+    if (filters.serviceModes.length > 0) return `as ${part}`;
+    // The remaining axes (independently-purchasable-service,
+    // based-in, service-area) are prepositioned at the parts
+    // site and are already ≥ 8 chars on their own. This branch
+    // is a defensive fallback that should not be reached.
+    return part;
   }
   return parts.join(", ");
 }
@@ -631,11 +660,22 @@ function BriefResults({
                 const effectiveTargetOfferingId =
                   targetOfferingId ?? rec.bestMatchingOffering.offeringId;
                 const targetOffering = selectTargetOffering(rec, highlightedOfferingId);
+                // M2 (#87) 7th review Finding 2: the
+                // explanations + match reason displayed in the
+                // row MUST describe the same offering the row
+                // displays. When the saved offering is in
+                // `additionalMatchingOfferings`, the helper
+                // re-derives the evidence from the target
+                // offering's own fields; otherwise the
+                // recommendation's existing evidence is
+                // authoritative.
+                const targetEvidence = selectTargetEvidence(rec, highlightedOfferingId);
                 return (
                   <RecommendationItem
                     key={rec.bestMatchingOfferingId}
                     recommendation={rec}
                     targetOffering={targetOffering}
+                    targetEvidence={targetEvidence}
                     index={index + 1}
                     // Disable every invite button while any invite is in
                     // flight so a buyer cannot fire concurrent ProjectRequest writes
@@ -676,6 +716,7 @@ function BriefResults({
 function RecommendationItem({
   recommendation,
   targetOffering,
+  targetEvidence,
   index,
   disabled,
   submitting,
@@ -691,6 +732,13 @@ function RecommendationItem({
   // otherwise it is the row's `bestMatchingOffering` (the
   // canonical display for fresh buyers with no Talent recovery).
   readonly targetOffering: PublicOfferingSummaryV1;
+  // M2 (#87) 7th review Finding 2: the row's evidence
+  // (factual explanations + match reason) describes the
+  // target offering — not the row's best matching offering
+  // when the target is the saved additional offering. The
+  // helper re-derives the evidence from the target's own
+  // fields when needed.
+  readonly targetEvidence: TargetEvidence;
   readonly index: number;
   readonly disabled: boolean;
   readonly submitting: boolean;
@@ -769,7 +817,7 @@ function RecommendationItem({
           className="list-disc list-inside text-xs text-gray-700"
           data-testid="matchmaker-explanation-list"
         >
-          {recommendation.explanations.map((entry, i) => (
+          {targetEvidence.explanations.map((entry, i) => (
             <li
               key={`${entry.kind}-${i}`}
               data-testid="matchmaker-explanation-item"
@@ -780,7 +828,7 @@ function RecommendationItem({
           ))}
         </ul>
         <p className="text-xs text-gray-700 mt-1" data-testid="matchmaker-match-reason">
-          {recommendation.matchReason}
+          {targetEvidence.matchReason}
         </p>
       </div>
       {/* BG7 inline audio preview surface. The toggle is a plain

@@ -13,7 +13,11 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import type { MatchmakerRecommendationV1 } from "@soundhub/types";
-import { findSavedOfferingId, selectTargetOffering } from "./find-saved-offering-id.js";
+import {
+  findSavedOfferingId,
+  selectTargetEvidence,
+  selectTargetOffering,
+} from "./find-saved-offering-id.js";
 
 function makeRecommendation(
   bestOfferingId: string,
@@ -140,5 +144,77 @@ describe("selectTargetOffering (M2 #87 6th review Finding 17)", () => {
     selectTargetOffering(rec, "of-add-1");
     selectTargetOffering(rec, null);
     assert.equal(JSON.stringify(rec), snapshot);
+  });
+});
+
+// M2 (#87) 7th review Finding 2: when the saved offering is
+// promoted from `additionalMatchingOfferings`, the row MUST
+// display evidence derived from the target offering's own
+// fields (not the best matching offering's). The
+// `selectTargetEvidence` helper returns the recommendation's
+// existing evidence when the saved offering IS the best
+// matching offering (or no recovery is present), and re-derives
+// the evidence from the target's own fields when the saved
+// offering is in the additional set.
+describe("selectTargetEvidence (M2 #87 7th review Finding 2)", () => {
+  test("returns the recommendation's existing evidence when no Talent recovery is present", () => {
+    const rec = makeRecommendation("of-best", ["of-add-1"]);
+    const evidence = selectTargetEvidence(rec, null);
+    assert.deepEqual(evidence.explanations, rec.explanations);
+    assert.equal(evidence.matchReason, rec.matchReason);
+  });
+
+  test("returns the recommendation's existing evidence when the saved offering IS the best matching offering", () => {
+    const rec = makeRecommendation("of-best", ["of-add-1"]);
+    const evidence = selectTargetEvidence(rec, "of-best");
+    assert.deepEqual(evidence.explanations, rec.explanations);
+    assert.equal(evidence.matchReason, rec.matchReason);
+  });
+
+  test("derives per-offering evidence when the saved offering is in `additionalMatchingOfferings`", () => {
+    // The saved offering is `of-add-1` (in additionalMatchings).
+    // The best matching offering is `of-best` with title "Best
+    // offering". The promoted offering's title is "Additional
+    // of-add-1" (per the makeRecommendation helper). The
+    // evidence MUST describe the promoted offering, NOT the
+    // best matching one.
+    const rec = makeRecommendation("of-best", ["of-add-1"]);
+    const evidence = selectTargetEvidence(rec, "of-add-1");
+    // Match reason MUST mention the promoted offering's title.
+    assert.match(evidence.matchReason, /Additional of-add-1/);
+    // Match reason MUST NOT mention the best matching offering's
+    // title.
+    assert.ok(
+      !/Best offering/.test(evidence.matchReason),
+      "matchReason MUST NOT mention the best matching offering's title when the saved offering is in additionalMatchings (Finding 2)",
+    );
+    // The explanations MUST include the promoted offering's title
+    // and category, NOT the best matching offering's.
+    const explanationLabels = evidence.explanations.map((e) => e.label).join(" | ");
+    assert.match(explanationLabels, /Additional of-add-1/);
+    assert.ok(
+      !/Best offering/.test(explanationLabels),
+      "explanations MUST NOT mention the best matching offering's title when the saved offering is in additionalMatchings (Finding 2)",
+    );
+    // Every explanation kind must be a valid ExplanationKindV1.
+    const validKinds = new Set([
+      "matched-offering-title",
+      "matched-category-key",
+      "matched-category-name",
+      "preferred-genre",
+      "preferred-category",
+      "preferred-specialty",
+      "preferred-affiliation",
+      "preferred-service-mode",
+      "preferred-included-service",
+      "preferred-locality",
+      "standalone-offering",
+    ]);
+    for (const entry of evidence.explanations) {
+      assert.ok(
+        validKinds.has(entry.kind),
+        `explanation kind "${entry.kind}" is not a valid ExplanationKindV1`,
+      );
+    }
   });
 });
