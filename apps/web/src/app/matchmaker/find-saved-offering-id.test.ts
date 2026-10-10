@@ -13,7 +13,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import type { MatchmakerRecommendationV1 } from "@soundhub/types";
-import { findSavedOfferingId } from "./find-saved-offering-id.js";
+import { findSavedOfferingId, selectTargetOffering } from "./find-saved-offering-id.js";
 
 function makeRecommendation(
   bestOfferingId: string,
@@ -89,6 +89,56 @@ describe("findSavedOfferingId (M2 #87 5th review Finding 3)", () => {
     const snapshot = JSON.stringify(rec);
     findSavedOfferingId(rec, "of-add-1");
     findSavedOfferingId(rec, "of-best");
+    assert.equal(JSON.stringify(rec), snapshot);
+  });
+});
+
+// M2 (#87) 6th review Finding 17: the row's target offering
+// drives the displayed title, category, and audio preview — so
+// the buyer reviews the exact offering the Send project request
+// will target. The helper returns the saved offering when it is
+// in either `bestMatchingOffering` or
+// `additionalMatchingOfferings`; otherwise it falls back to the
+// row's `bestMatchingOffering` (the canonical display for fresh
+// buyers with no Talent recovery).
+describe("selectTargetOffering (M2 #87 6th review Finding 17)", () => {
+  test("returns the saved offering when it is `bestMatchingOffering`", () => {
+    const rec = makeRecommendation("of-best", ["of-add-1"]);
+    const target = selectTargetOffering(rec, "of-best");
+    assert.equal(target.offeringId, "of-best");
+    assert.equal(target.title, "Best offering");
+  });
+
+  test("returns the saved offering when it is in `additionalMatchingOfferings`", () => {
+    const rec = makeRecommendation("of-best", ["of-add-1", "of-add-2"]);
+    const target = selectTargetOffering(rec, "of-add-2");
+    assert.equal(target.offeringId, "of-add-2");
+    // The recovered offering is the additional one — the row
+    // must show the additional offering's title, NOT the
+    // best-matching offering's title. This is the entire point
+    // of Finding 17: the buyer must review the offering the
+    // request will target.
+    assert.equal(target.title, "Additional of-add-2");
+    assert.notEqual(target.title, "Best offering");
+  });
+
+  test("falls back to `bestMatchingOffering` when the saved id is null (no recovery record)", () => {
+    const rec = makeRecommendation("of-best", ["of-add-1"]);
+    const target = selectTargetOffering(rec, null);
+    assert.equal(target.offeringId, "of-best");
+  });
+
+  test("falls back to `bestMatchingOffering` when the saved id is not in either set", () => {
+    const rec = makeRecommendation("of-best", ["of-add-1"]);
+    const target = selectTargetOffering(rec, "of-unrelated");
+    assert.equal(target.offeringId, "of-best");
+  });
+
+  test("the helper does NOT mutate the recommendation", () => {
+    const rec = makeRecommendation("of-best", ["of-add-1"]);
+    const snapshot = JSON.stringify(rec);
+    selectTargetOffering(rec, "of-add-1");
+    selectTargetOffering(rec, null);
     assert.equal(JSON.stringify(rec), snapshot);
   });
 });

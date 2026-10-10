@@ -11,7 +11,7 @@
 //
 // A `null` saved offeringId is treated as "no saved offering" so
 // the highlight lookup never matches an unrelated row.
-import type { MatchmakerRecommendationV1 } from "@soundhub/types";
+import type { MatchmakerRecommendationV1, PublicOfferingSummaryV1 } from "@soundhub/types";
 
 export function findSavedOfferingId(
   recommendation: MatchmakerRecommendationV1,
@@ -27,4 +27,30 @@ export function findSavedOfferingId(
     }
   }
   return null;
+}
+
+// M2 (#87) 6th review Finding 17: the row's target offering is
+// the saved offering when it is in either `bestMatchingOffering`
+// or `additionalMatchingOfferings`; otherwise it falls back to
+// the row's `bestMatchingOffering` (the canonical display for
+// fresh buyers with no Talent recovery). The returned summary
+// drives every row display element (title, category, audio
+// preview) so the buyer reviews the exact offering the Send
+// project request will target — not the row's best match when
+// the saved offering is in the additional set.
+export function selectTargetOffering(
+  recommendation: MatchmakerRecommendationV1,
+  savedOfferingId: string | null,
+): PublicOfferingSummaryV1 {
+  if (savedOfferingId !== null) {
+    if (recommendation.bestMatchingOffering.offeringId === savedOfferingId) {
+      return recommendation.bestMatchingOffering;
+    }
+    for (const additional of recommendation.additionalMatchingOfferings) {
+      if (additional.offeringId === savedOfferingId) {
+        return additional;
+      }
+    }
+  }
+  return recommendation.bestMatchingOffering;
 }

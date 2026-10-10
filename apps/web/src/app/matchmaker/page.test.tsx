@@ -1108,8 +1108,8 @@ describe("M2 (#87) Matchmaker page — Talent continuation contract", () => {
     // The page MUST import the helper from its own module.
     assert.match(
       source,
-      /import\s*\{\s*findSavedOfferingId\s*\}\s*from\s*["']\.\/find-saved-offering-id["']/,
-      "matchmaker page MUST import findSavedOfferingId from ./find-saved-offering-id (the helper cannot be a page-module export)",
+      /import\s*\{\s*findSavedOfferingId\s*,\s*selectTargetOffering\s*\}\s*from\s*["']\.\/find-saved-offering-id["']/,
+      "matchmaker page MUST import findSavedOfferingId and selectTargetOffering from ./find-saved-offering-id (the helpers cannot be page-module exports)",
     );
     // The page MUST use the helper to drive the highlight.
     assert.match(
@@ -1134,6 +1134,85 @@ describe("M2 (#87) Matchmaker page — Talent continuation contract", () => {
       source,
       /targetOfferingId:\s*offeringId/,
       "matchmaker page MUST forward targetOfferingId to the inviteFromRecommendation seam (Finding 3)",
+    );
+  });
+
+  // M2 (#87) 6th review Finding 16: the `submitting` comparison
+  // must use a stable per-row target id (saved offering or
+  // best-matching fallback). A `null === null` comparison would
+  // light up every row's "Inviting…" label on initial mount
+  // before any invite starts, and disable the buttons (the
+  // `disabled` check is any-in-flight, but the per-row
+  // `submitting` prop is supposed to reflect ONLY the in-flight
+  // row's id match).
+  test("Finding 16 — `submitting` comparison uses a stable per-row target id (6th review)", () => {
+    const source = readMatchmakerPage();
+    // The page MUST derive an `effectiveTargetOfferingId` that
+    // falls back to the row's bestMatchingOffering.offeringId
+    // when the Talent recovery is absent. The fallback
+    // guarantees the comparison resolves to a unique id per row
+    // on initial mount.
+    assert.match(
+      source,
+      /effectiveTargetOfferingId\s*=\s*targetOfferingId\s*\?\?/,
+      "matchmaker page MUST derive an effective target id that falls back to the row's best matching offering when the Talent recovery is absent (Finding 16)",
+    );
+    // The `submitting` prop MUST compare against the effective
+    // target id, not the (potentially null) saved offering id.
+    assert.match(
+      source,
+      /submitting=\{invitingRecommendationId\s*===\s*effectiveTargetOfferingId\}/,
+      "matchmaker page MUST compare `submitting` against the effective target id, not the saved offering id (Finding 16)",
+    );
+  });
+
+  // M2 (#87) 6th review Finding 17: the row MUST display the
+  // target offering's summary (title, category, audio preview,
+  // button offering-id) so the buyer reviews the exact offering
+  // the Send project request will target. When the saved
+  // offering is in `additionalMatchingOfferings`, the row must
+  // show the additional offering's title — not the row's best
+  // matching offering's title.
+  test("Finding 17 — row displays the target offering, not the best matching offering (6th review)", () => {
+    const source = readMatchmakerPage();
+    // The page MUST import the new helper.
+    assert.match(
+      source,
+      /import\s*\{\s*findSavedOfferingId,\s*selectTargetOffering\s*\}\s*from\s*["']\.\/find-saved-offering-id["']/,
+      "matchmaker page MUST import selectTargetOffering from the helper module (Finding 17)",
+    );
+    // The page MUST call `selectTargetOffering` per recommendation
+    // so every row gets the correct target offering.
+    assert.match(
+      source,
+      /selectTargetOffering\([\s\S]*?rec[\s\S]*?highlightedOfferingId/,
+      "matchmaker page MUST call selectTargetOffering(rec, highlightedOfferingId) to compute the per-row target offering (Finding 17)",
+    );
+    // The RecommendationItem MUST accept the target offering
+    // and use it for the displayed title, audio, and button id.
+    assert.match(
+      source,
+      /targetOffering:\s*PublicOfferingSummaryV1/,
+      "RecommendationItem MUST accept a targetOffering: PublicOfferingSummaryV1 prop (Finding 17)",
+    );
+    // The displayed title MUST be the target offering's title.
+    assert.match(
+      source,
+      /targetOffering\.title/,
+      "RecommendationItem MUST render targetOffering.title (Finding 17 — buyer reviews the offering the request will target)",
+    );
+    // The audio preview toggle MUST target the row's target
+    // offering id (not the row's best matching offering id).
+    assert.match(
+      source,
+      /fetchRecommendationAudioPreview\(targetOffering\.offeringId\)/,
+      "RecommendationItem MUST fetch the audio preview for targetOffering.offeringId (Finding 17)",
+    );
+    // The button's data-offering-id MUST match the target.
+    assert.match(
+      source,
+      /data-offering-id=\{targetOffering\.offeringId\}/,
+      "Send project request button MUST label the target offering id, not the best matching offering id (Finding 17)",
     );
   });
 });

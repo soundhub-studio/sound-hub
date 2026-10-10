@@ -35,6 +35,7 @@ import type {
   ApiFieldErrorV1,
   CategoryMetadataItemV1,
   MatchmakerRecommendationV1,
+  PublicOfferingSummaryV1,
   SubmitBriefResponseV1,
 } from "@soundhub/types";
 import { categoryMetadataResponseV1Schema } from "@soundhub/types";
@@ -55,7 +56,7 @@ import {
   clearTalentMatchmakerContext,
   readTalentMatchmakerContext,
 } from "../lib/talent-matchmaker-context";
-import { findSavedOfferingId } from "./find-saved-offering-id";
+import { findSavedOfferingId, selectTargetOffering } from "./find-saved-offering-id";
 
 const EMPTY_FILTERS: RequiredFiltersValue = {
   primaryCategoryKey: "",
@@ -602,30 +603,52 @@ function BriefResults({
           ) : (
             <ul className="space-y-4" data-testid="matchmaker-recommendation-list">
               {response.recommendations.map((rec, index) => {
-                // M2 (#87) Finding 8 (5th review): locate the
-                // saved offering across both `bestMatchingOffering`
-                // and `additionalMatchingOfferings`. When the
-                // saved offering is in the additional set, the
-                // page must still highlight the parent row AND
-                // route the Send project request to the saved
-                // offering's id (NOT the row's best matching
-                // offering) so the buyer's original click on
-                // /talent is honored.
+                // M2 (#87) Finding 8 (5th review + 6th review):
+                // locate the saved offering across both
+                // `bestMatchingOffering` and
+                // `additionalMatchingOfferings`. When the saved
+                // offering is in the additional set, the page
+                // must still highlight the parent row, route the
+                // Send project request to the saved offering's
+                // id (NOT the row's best matching offering), AND
+                // render the saved offering's summary (title,
+                // category, audio) so the buyer reviews the
+                // exact offering the request will target.
                 const targetOfferingId =
                   highlightedOfferingId === null
                     ? null
                     : findSavedOfferingId(rec, highlightedOfferingId);
+                // The "effective target" is the saved offering
+                // when the row contains it; otherwise the row's
+                // best matching offering (the canonical display
+                // for fresh buyers with no Talent recovery). The
+                // stable id lets the `submitting` comparison
+                // resolve correctly when `targetOfferingId` is
+                // null: every row falls back to its own
+                // best-matching id, so the comparison only
+                // matches the in-flight row (not all rows as
+                // before).
+                const effectiveTargetOfferingId =
+                  targetOfferingId ?? rec.bestMatchingOffering.offeringId;
+                const targetOffering = selectTargetOffering(rec, highlightedOfferingId);
                 return (
                   <RecommendationItem
                     key={rec.bestMatchingOfferingId}
                     recommendation={rec}
+                    targetOffering={targetOffering}
                     index={index + 1}
                     // Disable every invite button while any invite is in
                     // flight so a buyer cannot fire concurrent ProjectRequest writes
                     // against the same brief. The in-flight row still renders the
                     // "Inviting…" label so the buyer can see which row is in flight.
                     disabled={!actingWorkspaceId || invitingRecommendationId !== null}
-                    submitting={invitingRecommendationId === targetOfferingId}
+                    // M2 (#87) 6th review Finding 16: the
+                    // `submitting` comparison must use the row's
+                    // effective target id (saved offering or
+                    // best-matching fallback) — never a null vs
+                    // null comparison that lights up every row
+                    // on initial mount.
+                    submitting={invitingRecommendationId === effectiveTargetOfferingId}
                     onInvite={() => onInvite(rec, targetOfferingId)}
                     highlightedOfferingId={highlightedOfferingId}
                   />
@@ -652,6 +675,7 @@ function BriefResults({
 
 function RecommendationItem({
   recommendation,
+  targetOffering,
   index,
   disabled,
   submitting,
@@ -659,6 +683,14 @@ function RecommendationItem({
   highlightedOfferingId,
 }: {
   readonly recommendation: MatchmakerRecommendationV1;
+  // M2 (#87) 6th review Finding 17: the row displays the target
+  // offering's summary (title, category, service mode, audio
+  // preview) so the buyer reviews the exact offering the Send
+  // project request will target. When the saved offering is in
+  // `additionalMatchingOfferings`, this is the saved offering;
+  // otherwise it is the row's `bestMatchingOffering` (the
+  // canonical display for fresh buyers with no Talent recovery).
+  readonly targetOffering: PublicOfferingSummaryV1;
   readonly index: number;
   readonly disabled: boolean;
   readonly submitting: boolean;
@@ -669,7 +701,10 @@ function RecommendationItem({
   // sample" to fetch the bounded audio samples for this offering
   // and play the first sample inline. The toggle keeps the
   // collapsed row readable; the fetch reuses the existing
-  // buyer-safe `listOfferingSamples` endpoint.
+  // buyer-safe `listOfferingSamples` endpoint. The preview
+  // targets the same offering the row displays and the request
+  // will create — `targetOffering.offeringId` — not the row's
+  // best matching offering.
   const [previewing, setPreviewing] = useState<boolean>(false);
   const [preview, setPreview] = useState<RecommendationAudioPreview | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
@@ -686,9 +721,7 @@ function RecommendationItem({
     setPreviewLoading(true);
     setPreviewError(null);
     try {
-      const result = await fetchRecommendationAudioPreview(
-        recommendation.bestMatchingOffering.offeringId,
-      );
+      const result = await fetchRecommendationAudioPreview(targetOffering.offeringId);
       setPreview(result);
       if (result === null) {
         setPreviewError("No samples available for this offering.");
@@ -705,7 +738,7 @@ function RecommendationItem({
       className="border border-gray-200 rounded-md p-3 space-y-2"
       data-testid="matchmaker-recommendation-item"
       data-recommendation-index={index}
-      data-recommendation-id={recommendation.bestMatchingOffering.offeringId}
+      data-recommendation-id={targetOffering.offeringId}
       // M2 (#87) Finding 8 (5th review): the row is highlighted
       // when the saved offering is in either `bestMatchingOffering`
       // or `additionalMatchingOfferings`. The `findSavedOfferingId`
@@ -722,11 +755,10 @@ function RecommendationItem({
     >
       <div>
         <p className="text-sm font-medium text-gray-900">
-          #{index} {recommendation.professionalName} — {recommendation.bestMatchingOffering.title}
+          #{index} {recommendation.professionalName} — {targetOffering.title}
         </p>
         <p className="text-xs text-gray-600">
-          {recommendation.bestMatchingOffering.primaryCategory.name} ·{" "}
-          {recommendation.bestMatchingOffering.serviceMode} · based in{" "}
+          {targetOffering.primaryCategory.name} · {targetOffering.serviceMode} · based in{" "}
           {recommendation.seller.basedIn.countryCode}
           {recommendation.seller.basedIn.city ? `, ${recommendation.seller.basedIn.city}` : ""}
         </p>
@@ -754,11 +786,14 @@ function RecommendationItem({
       {/* BG7 inline audio preview surface. The toggle is a plain
           button the focused UI test clicks; the player is a
           SoundHub-owned in-app playback URL the browser renders as
-          `<audio src>` without inspecting its internals. */}
+          `<audio src>` without inspecting its internals. The
+          preview surface targets the row's `targetOffering` so
+          the audio the buyer hears matches the offering the Send
+          project request will create (Finding 17). */}
       <div
         className="space-y-1"
         data-testid="matchmaker-recommendation-audio"
-        data-offering-id={recommendation.bestMatchingOffering.offeringId}
+        data-offering-id={targetOffering.offeringId}
       >
         <button
           type="button"
@@ -813,7 +848,7 @@ function RecommendationItem({
           disabled={disabled || submitting}
           className="bg-coral text-white px-3 py-1.5 rounded-md text-sm font-semibold hover:bg-coral-hover disabled:opacity-50 transition-colors"
           data-testid="matchmaker-send-project-request"
-          data-offering-id={recommendation.bestMatchingOffering.offeringId}
+          data-offering-id={targetOffering.offeringId}
         >
           {submitting ? "Inviting…" : "Send project request"}
         </button>
