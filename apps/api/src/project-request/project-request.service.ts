@@ -200,17 +200,22 @@ export class ProjectRequestService {
    * Deal, AND creates exactly one AI-drafted, unapproved current
    * TermsVersion (ticket #88 acceptance criteria + GS 18 + GS 26).
    *
-   * The AI candidate is produced by the wired `termsDraftAiAdapter`
-   * BEFORE the transaction opens; the candidate is structurally
-   * validated against `bg5ProposedTermsV1Schema` and any malformed
-   * output collapses to `PROJECT_REQUEST_TERMS_DRAFT_INVALID` —
-   * no Deal is created when validation fails. The Deal + v1
-   * TermsVersion are persisted in the same transaction so a retry
-   * that re-enters the same payload converges on the same rows
-   * via the `(deals.projectRequestId)` and `(termsVersions.dealId,
-   * version)` UNIQUE indexes. The transaction does NOT approve the
-   * TermsVersion (per the M2 authority invariants: ProjectRequest
-   * acceptance is not TermsVersion approval).
+   * M2 (#88) Codex finding: the AI candidate is produced INSIDE
+   * the transaction via a deferred thunk the use case closure
+   * captures. The repository invokes the thunk AFTER the
+   * guarded Pending → Accepted update + Deal insert succeed
+   * and BEFORE the TermsVersion insert. The adapter is
+   * therefore NOT invoked for unauthorized / already-responded /
+   * losing-concurrent attempts, and concurrent accepts share the
+   * same retry-safe adapter call only on the winning path. A
+   * strict-validation failure on the winning path throws and the
+   * surrounding `$transaction` rolls back, leaving no Deal +
+   * no TermsVersion rows behind. The (deals.projectRequestId) +
+   * (termsVersions.dealId, version) UNIQUE indexes are the
+   * durable convergence keys for same-attempt retry. The
+   * transaction does NOT approve the TermsVersion (per the M2
+   * authority invariants: ProjectRequest acceptance is not
+   * TermsVersion approval).
    */
   async acceptProjectRequest(input: AcceptProjectRequestInput): Promise<{
     readonly projectRequest: ProjectRequestPublicV1;
@@ -234,15 +239,15 @@ export class ProjectRequestService {
       projectBriefId: `pending-${input.projectRequestId}`,
     };
 
-    // Step 2: produce + validate the initial TermsVersion candidate.
-    // The adapter is invoked OUTSIDE the transaction so a malformed
-    // candidate never opens a transaction (the application boundary
-    // refuses to persist any Deal without a strictly valid
-    // TermsVersion to pair it with — ticket #88 acceptance criterion:
-    // "Seller acceptance atomically and retry-safely creates exactly
-    // one Negotiating Deal and AI-drafted, unapproved current
-    // TermsVersion").
-    const draft = await this.produceInitialTermsVersionDraft(input, aiContext);
+    // Step 2: build the deferred AI draft producer. The thunk
+    // is captured by the use case closure and invoked by the
+    // repository ONLY when the use case decides to accept.
+    // Concurrent losing accepts therefore never invoke the
+    // adapter; unauthorized attempts never invoke the adapter;
+    // already-responded attempts never invoke the adapter.
+    const produceInitialTermsVersionDraft = async (): Promise<InitialTermsVersionDraft> => {
+      return this.produceInitialTermsVersionDraft(input, aiContext);
+    };
 
     // Step 3: open one transaction via the use-case closure.
     const useCase: RespondProjectRequestUseCase = (
@@ -257,7 +262,18 @@ export class ProjectRequestService {
         projectRequestId: ctx.projectRequest.id,
         sellerDecisionByUserId: input.userAccountId,
         now: this.now(),
-        initialTermsVersionDraft: draft,
+        // M2 (#88) Codex finding: the AI draft is a thunk
+        // captured from the use-case context. The repository
+        // invokes it INSIDE the transaction, AFTER the guarded
+        // transition + Deal insert succeed, and BEFORE the
+        // TermsVersion insert. A strict-validation failure
+        // throws and rolls back the transaction.
+        produceInitialTermsVersionDraft:
+          ctx.produceInitialTermsVersionDraft ??
+          (() =>
+            Promise.reject(
+              new Error("Internal error: repository did not provide an AI draft producer."),
+            )),
       });
     };
 
@@ -267,6 +283,7 @@ export class ProjectRequestService {
         actingWorkspaceId: input.actingWorkspaceId,
         userAccountId: input.userAccountId,
         now: this.now(),
+        produceInitialTermsVersionDraft,
       },
       useCase,
     );

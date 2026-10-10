@@ -153,15 +153,19 @@ export interface PersistAcceptProjectRequestInput {
   readonly sellerDecisionByUserId: string;
   readonly now: Date;
   /**
-   * M2 (#88): the AI-drafted TermsVersion proposal persisted alongside
-   * the new Deal in the SAME transaction. Required on accept; absent
-   * on decline. The application layer validates the candidate against
-   * `bg5ProposedTermsV1Schema` BEFORE handing it to the repository;
-   * the repository does NOT validate it. The transaction persists the
-   * row with monotonic version 1; the `(dealId, version)` UNIQUE
-   * index is the durable convergence key for same-attempt retry.
+   * M2 (#88) Codex finding: the AI draft is a LAZY thunk. The
+   * use-case closure returns a `produceInitialTermsVersionDraft`
+   * thunk; the repository invokes it INSIDE the transaction
+   * AFTER the guarded Pending → Accepted update succeeds
+   * and BEFORE the TermsVersion insert. The adapter is therefore
+   * never invoked for unauthorized / already-responded /
+   * losing-concurrent attempts, and concurrent accepts share the
+   * same retry-safe adapter call only on the winning path. The
+   * repository persists the row with monotonic version 1; the
+   * `(dealId, version)` UNIQUE index is the durable convergence
+   * key for same-attempt retry.
    */
-  readonly initialTermsVersionDraft: InitialTermsVersionDraft;
+  readonly produceInitialTermsVersionDraft: () => Promise<InitialTermsVersionDraft>;
 }
 
 export interface PersistDeclineProjectRequestInput {
@@ -227,6 +231,20 @@ export interface CreateProjectRequestTransactionInput {
 export interface RespondProjectRequestUseCaseContext {
   readonly sellerAuthority: SellerAuthoritySnapshot;
   readonly projectRequest: PersistedProjectRequest;
+  /**
+   * M2 (#88) Codex finding: the AI candidate MUST be produced
+   * INSIDE the use-case closure, AFTER the seller-authority
+   * snapshot is evaluated. The repository injects a deferred
+   * draft producer; the use case calls it only when the
+   * accept verdict is taken. This ensures the AI adapter is
+   * invoked exactly once on a successful accept and never on
+   * unauthorized / already-responded / losing-concurrent
+   * attempts.
+   *
+   * The producer is `null` when the use case is for tests
+   * that bypass the AI boundary.
+   */
+  readonly produceInitialTermsVersionDraft: (() => Promise<InitialTermsVersionDraft>) | null;
 }
 
 export interface RespondProjectRequestUseCaseTools {
@@ -250,6 +268,17 @@ export interface RespondProjectRequestTransactionInput {
   readonly actingWorkspaceId: string;
   readonly userAccountId: string;
   readonly now: Date;
+  /**
+   * M2 (#88) Codex finding: the AI draft producer is threaded
+   * into the use-case context so the adapter is invoked ONLY
+   * when the use case decides to accept. The repository passes
+   * it through to the use case closure. The producer is
+   * optional; tests that exercise the BG4 repository
+   * contracts without going through the service may pass
+   * `null` (or omit it entirely) and the use case closure is
+   * responsible for any fallback path.
+   */
+  readonly produceInitialTermsVersionDraft?: (() => Promise<InitialTermsVersionDraft>) | null;
 }
 
 export interface AcceptProjectRequestResult {

@@ -55,10 +55,11 @@ test("provisionDealApprover succeeds for an Active Personal Workspace current me
     requestId: REQUEST_ID,
   });
   assert.equal(result.dealApprover.workspaceId, PERSONAL_WORKSPACE_ID);
-  assert.equal(result.dealApprover.userId, ACTING_USER_ID);
-  // Customer-facing copy never mentions DealApprover internals —
-  // the public DTO surfaces the same fields the route layer
-  // serialises.
+  // M2 (#88) Codex finding: account identity must NOT cross the
+  // public boundary. The (workspaceId, userId) tuple stays on
+  // the private evidence rows; the public DTO only carries the
+  // bounded permission identifier, the Workspace, and the grant
+  // timestamp.
   assert.equal(result.dealApprover.dealApproverId.length > 0, true);
 });
 

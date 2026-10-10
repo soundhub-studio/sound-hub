@@ -93,11 +93,18 @@ export function buildAcceptUseCase(
   return (ctx: RespondProjectRequestUseCaseContext, tools: RespondProjectRequestUseCaseTools) => {
     const verdict = evaluateSellerAuthority(ctx.sellerAuthority);
     if (!verdict.ok) return tools.reject("SELLER_NOT_AUTHORIZED");
+    // M2 (#88) Codex finding: the AI draft is now a thunk
+    // captured from the use-case context. The repository
+    // invokes the thunk inside the transaction. Tests pass
+    // either an explicit draft or rely on the context thunk
+    // (which the tests inject through the `null` fallback).
+    const draft = initialTermsVersionDraft ?? defaultInitialTermsVersionDraft();
     return tools.accept({
       projectRequestId: ctx.projectRequest.id,
       sellerDecisionByUserId: ctx.sellerAuthority.userAccountId,
       now,
-      initialTermsVersionDraft: initialTermsVersionDraft ?? defaultInitialTermsVersionDraft(),
+      produceInitialTermsVersionDraft:
+        ctx.produceInitialTermsVersionDraft ?? (() => Promise.resolve(draft)),
     });
   };
 }

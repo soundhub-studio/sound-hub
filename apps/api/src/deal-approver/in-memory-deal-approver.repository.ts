@@ -207,6 +207,24 @@ export class InMemoryDealApproverRepository implements DealApproverRepository {
 
   // ---------- helpers ----------
 
+  // M2 (#88) Codex finding: the DealTermsService needs a derived
+  // signal for the acting Workspace's authorization state on
+  // this human (`actingSideHasDealApprover`) so the web can
+  // render the permission CTA and the approve CTA MUTUALLY
+  // EXCLUSIVELY. The in-memory adapter mirrors the Prisma
+  // adapter's read-only `findUnique`-equivalent lookup.
+  findDealApprover(input: {
+    readonly workspaceId: string;
+    readonly userId: string;
+  }): Promise<PersistedDealApprover | null> {
+    for (const da of this.dealApprovers.values()) {
+      if (da.workspaceId === input.workspaceId && da.userId === input.userId) {
+        return Promise.resolve(da);
+      }
+    }
+    return Promise.resolve(null);
+  }
+
   private membershipKey(userId: string, workspaceId: string): string {
     return `${userId}|${workspaceId}`;
   }

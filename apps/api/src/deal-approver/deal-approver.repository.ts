@@ -174,4 +174,26 @@ export interface DealApproverRepository {
     | { readonly ok: true; readonly value: ProvisionDealApproverResult }
     | { readonly ok: false; readonly reason: ProvisionDealApproverFailureReason }
   >;
+
+  /**
+   * M2 (#88) Codex finding: the DealTermsService needs a
+   * derived signal for the acting Workspace's authorization
+   * state on this human (`actingSideHasDealApprover`) so the
+   * web can render the permission CTA and the approve CTA
+   * MUTUALLY EXCLUSIVELY. The repository is the canonical
+   * owner of the `deal_approvers` row keyed by
+   * (workspaceId, userId); the lookup is read-only and does
+   * NOT take any FOR UPDATE locks. The service fails closed
+   * on a database error so the page surfaces a generic 5xx
+   * rather than silently flipping the predicate.
+   *
+   * The (workspaceId, userId) tuple is the same one the
+   * existing `provisionDealApproverInTransaction` writes
+   * against, so the contract is identical to the durable
+   * authorization state.
+   */
+  findDealApprover(input: {
+    readonly workspaceId: string;
+    readonly userId: string;
+  }): Promise<PersistedDealApprover | null>;
 }

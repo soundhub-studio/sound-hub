@@ -23,6 +23,7 @@ const visibleDeal = {
       status: "Accepted",
       sellerConsentAt: "2026-09-02T00:00:05.000Z",
     },
+    actingSideHasDealApprover: false,
   },
 } satisfies Bg5GetDealResponseV1;
 

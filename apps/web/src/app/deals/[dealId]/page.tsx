@@ -87,6 +87,13 @@ export default function DealPage({ params }: DealPageProps): JSX.Element {
     null,
   );
   const [currentApprovals, setCurrentApprovals] = useState<readonly Bg5DealApprovalPublicV1[]>([]);
+  // M2 (#88) Codex finding: derived from the durable
+  // `(workspaceId, userId)` `deal_approvers` row. The page
+  // uses this signal to render the permission CTA and the
+  // approve CTA MUTUALLY EXCLUSIVELY (only ONE may show at a
+  // time). False when the row is absent OR when the lookup
+  // failed (fail-closed).
+  const [actingSideHasDealApprover, setActingSideHasDealApprover] = useState<boolean>(false);
   const [sellerConsent, setSellerConsent] = useState<Bg5SellerConsentProjectionV1 | null>(null);
   const [loadingDeal, setLoadingDeal] = useState<boolean>(false);
   const [bootstrapComplete, setBootstrapComplete] = useState<boolean>(false);
@@ -111,6 +118,7 @@ export default function DealPage({ params }: DealPageProps): JSX.Element {
         setCurrentTermsVersion(null);
         setCurrentApprovals([]);
         setSellerConsent(null);
+        setActingSideHasDealApprover(false);
         return;
       }
       setLoadingDeal(true);
@@ -121,6 +129,7 @@ export default function DealPage({ params }: DealPageProps): JSX.Element {
         setCurrentTermsVersion(result.deal.currentTermsVersion);
         setCurrentApprovals(result.deal.currentApprovals);
         setSellerConsent(result.deal.sellerConsent);
+        setActingSideHasDealApprover(result.deal.actingSideHasDealApprover);
       } catch (err) {
         if (
           err instanceof Error &&
@@ -145,6 +154,7 @@ export default function DealPage({ params }: DealPageProps): JSX.Element {
       setCurrentTermsVersion(null);
       setCurrentApprovals([]);
       setSellerConsent(null);
+      setActingSideHasDealApprover(false);
       return;
     }
     if (
@@ -181,6 +191,7 @@ export default function DealPage({ params }: DealPageProps): JSX.Element {
         setCurrentTermsVersion(result.response.deal.currentTermsVersion);
         setCurrentApprovals(result.response.deal.currentApprovals);
         setSellerConsent(result.response.deal.sellerConsent);
+        setActingSideHasDealApprover(result.response.deal.actingSideHasDealApprover);
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -362,22 +373,23 @@ export default function DealPage({ params }: DealPageProps): JSX.Element {
   const alreadyApproved =
     currentTermsVersion !== null &&
     currentApprovals.some((a) => a.workspaceId === actingWorkspaceId);
-  const showApprove =
-    capabilityRequired !== null &&
-    currentTermsVersion !== null &&
-    !alreadyApproved &&
-    currentTermsVersion.isCurrentVersion;
-  // M2 (#88): a Personal-Workspace member who lacks an explicit
-  // `DealApprover` authorization sees the aubergine "Permission
-  // to approve terms" CTA. The CTA routes to the JIT setup page,
-  // which (on success) returns to this same Deal and current
-  // TermsVersion. The Approve action itself remains a separate
-  // explicit step after setup.
-  const showPermissionCta =
+  // M2 (#88) Codex finding: the permission CTA and the
+  // approve CTA are MUTUALLY EXCLUSIVE. The permission CTA
+  // shows only when the acting human lacks an explicit
+  // `DealApprover` authorization; the approve CTA shows only
+  // when they have one. The signal is the durable
+  // `(workspaceId, userId)` `deal_approvers` row, NOT the
+  // approval history. A side that has never approved may
+  // still hold a DealApprover (e.g. provisioned via the
+  // dashboard readiness task) — only the durable row
+  // proves it.
+  const hasCapabilityForDecision =
     capabilityRequired !== null &&
     currentTermsVersion !== null &&
     currentTermsVersion.isCurrentVersion &&
     !alreadyApproved;
+  const showApprove = hasCapabilityForDecision && actingSideHasDealApprover;
+  const showPermissionCta = hasCapabilityForDecision && !actingSideHasDealApprover;
   const dealSummaryCopy = buildDealSummaryCopy(deal.status);
 
   // BG6 funding state. The FundingCard renders a single allow-listed
@@ -586,7 +598,17 @@ export default function DealPage({ params }: DealPageProps): JSX.Element {
               onPermissionCta={
                 showPermissionCta
                   ? () => {
-                      window.location.assign(`/deals/${deal.dealId}/approve-permission`);
+                      // M2 (#88) Codex finding: thread the acting
+                      // Workspace through the URL so the
+                      // destination page can revalidate the
+                      // exact selection against the Deal view
+                      // (the human must be a current member AND
+                      // a party to this Deal) instead of
+                      // silently choosing the first Workspace
+                      // that can read the Deal.
+                      window.location.assign(
+                        `/deals/${deal.dealId}/approve-permission?actingWorkspaceId=${encodeURIComponent(actingWorkspaceId)}`,
+                      );
                     }
                   : null
               }

@@ -316,6 +316,26 @@ export class PrismaDealApproverRepository implements DealApproverRepository {
       throw err;
     }
   }
+
+  async findDealApprover(input: {
+    readonly workspaceId: string;
+    readonly userId: string;
+  }): Promise<PersistedDealApprover | null> {
+    // Read-only lookup against the durable (workspaceId, userId)
+    // index. The query does NOT take FOR UPDATE locks; it is
+    // served from a fresh snapshot. The (workspaceId, userId)
+    // UNIQUE index guarantees the result is at most one row.
+    const row = await this.prisma.dealApprover.findUnique({
+      where: {
+        workspaceId_userId: {
+          workspaceId: input.workspaceId,
+          userId: input.userId,
+        },
+      },
+    });
+    if (row === null) return null;
+    return toPersistedDealApprover(row);
+  }
 }
 
 function toPersistedDealApprover(row: {

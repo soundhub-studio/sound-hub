@@ -105,11 +105,19 @@ test("POST /api/deal-approvers returns 201 + bounded dealApprover on success", a
     assert.equal(result.status, 201);
     const body = result.body as {
       ok: boolean;
-      dealApprover: { dealApproverId: string; workspaceId: string; userId: string };
+      dealApprover: { dealApproverId: string; workspaceId: string; grantedAt: string };
     };
     assert.equal(body.ok, true);
     assert.equal(body.dealApprover.workspaceId, PERSONAL_WORKSPACE_ID);
-    assert.equal(body.dealApprover.userId, ACTING_USER_ID);
+    // M2 (#88) Codex finding: account identity must NOT cross the
+    // public boundary. The public DTO carries only the bounded
+    // permission identifier, the Workspace, and the grant
+    // timestamp.
+    assert.equal(
+      "userId" in (body.dealApprover as Record<string, unknown>),
+      false,
+      "dealApprover public DTO must not include userId",
+    );
   });
 });
 
@@ -144,7 +152,13 @@ test("POST /api/deal-approvers rejects an invalid body shape with DEAL_APPROVER_
   });
 });
 
-test("POST /api/deal-approvers rejects an unknown confirmationVersion with 422", async () => {
+test("POST /api/deal-approvers rejects a stale confirmationVersion with the dedicated 422 envelope", async () => {
+  // M2 (#88) Codex finding: a stale or unknown
+  // `confirmationVersion` is a typed 422
+  // (`DEAL_APPROVER_CONFIRMATION_VERSION_MISMATCH`), NOT a
+  // generic 400. Clients must be able to distinguish an outdated
+  // attestation from a malformed request so the customer can
+  // re-read the current version.
   const { app } = buildApp();
   await withServer(app, async (port) => {
     const result = await postProvisioning(
@@ -152,8 +166,31 @@ test("POST /api/deal-approvers rejects an unknown confirmationVersion with 422",
       {
         actingWorkspaceId: PERSONAL_WORKSPACE_ID,
         // The strict Zod schema is a literal `m2-deal-approver-v1`;
-        // any other value is rejected at the boundary.
+        // any other value is rejected at the boundary with the
+        // dedicated mismatch envelope.
         confirmationVersion: "m2-deal-approver-v0",
+        idempotencyKey: "11111111-1111-1111-1111-111111111111",
+      },
+      "soundhub_session=session-acting",
+    );
+    assert.equal(result.status, 422);
+    const body = result.body as { error: { code: string } };
+    assert.equal(body.error.code, "DEAL_APPROVER_CONFIRMATION_VERSION_MISMATCH");
+  });
+});
+
+test("POST /api/deal-approvers rejects a missing confirmationVersion with 400 DEAL_APPROVER_INVALID (not 422)", async () => {
+  // The dedicated 422 envelope is reserved for FIELD-SPECIFIC
+  // mismatches on `confirmationVersion`. A missing
+  // `confirmationVersion` is a malformed body and surfaces the
+  // generic 400 envelope.
+  const { app } = buildApp();
+  await withServer(app, async (port) => {
+    const result = await postProvisioning(
+      port,
+      {
+        actingWorkspaceId: PERSONAL_WORKSPACE_ID,
+        // confirmationVersion intentionally omitted
         idempotencyKey: "11111111-1111-1111-1111-111111111111",
       },
       "soundhub_session=session-acting",

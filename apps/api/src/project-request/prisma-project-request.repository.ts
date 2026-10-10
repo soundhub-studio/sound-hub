@@ -518,7 +518,21 @@ export class PrismaProjectRequestRepository implements ProjectRequestRepository 
             accept: (acceptInput) => ({ kind: "accept", input: acceptInput }),
             decline: (declineInput) => ({ kind: "decline", input: declineInput }),
           };
-          const outcome = useCase({ sellerAuthority, projectRequest }, tools);
+          // M2 (#88) Codex finding: the AI draft producer is
+          // threaded into the use-case context so the adapter is
+          // invoked only when the use case decides to accept. The
+          // repository itself never invokes the producer; the
+          // use case closure captures the producer and threads it
+          // into the accept verdict's `produceInitialTermsVersionDraft`
+          // thunk.
+          const outcome = useCase(
+            {
+              sellerAuthority,
+              projectRequest,
+              produceInitialTermsVersionDraft: input.produceInitialTermsVersionDraft ?? null,
+            },
+            tools,
+          );
 
           if (outcome.kind === "reject") {
             return { ok: false as const, reason: outcome.reason };
@@ -554,26 +568,33 @@ export class PrismaProjectRequestRepository implements ProjectRequestRepository 
                 projectRequestId: updated.id,
               },
             });
-            // M2 (#88): atomically persist the AI-drafted, unapproved
-            // initial TermsVersion (v1) inside the SAME transaction
-            // that creates the Deal. The (dealId, version) UNIQUE
-            // index is the durable convergence key for same-attempt
-            // retry: a re-entrant accept that re-uses the same
-            // already-created Deal cannot create a second TermsVersion
-            // because the unique index rejects the duplicate INSERT.
-            // The draft flows from the use-case closure's accept
-            // verdict (the application owns the AI boundary + strict
-            // validation) — the repository never decides what to
-            // persist, only that the row is persisted atomically.
-            const draft = outcome.input.initialTermsVersionDraft;
-            if (!draft) {
-              // Defensive guard: the service must supply a draft
-              // candidate via the use-case closure. If it did not,
-              // the transaction rolls back with no state change.
-              throw new Error(
-                "Internal error: accept use-case verdict lacked an initial TermsVersion draft.",
-              );
-            }
+            // M2 (#88) Codex finding: invoke the AI draft thunk
+            // HERE — inside the transaction, AFTER the guarded
+            // Pending → Accepted update + Deal insert succeed,
+            // and BEFORE the TermsVersion insert. The adapter is
+            // therefore NOT invoked for unauthorized /
+            // already-responded / losing-concurrent attempts. A
+            // strict-validated candidate is materialized only on
+            // the winning path; a malformed candidate collapses
+            // the transaction with no state change (no Deal, no
+            // TermsVersion, no Accept transition).
+            //
+            // The thunk is also responsible for strict Zod
+            // validation against `bg5ProposedTermsV1Schema`; a
+            // validation failure throws and the surrounding
+            // `$transaction` rolls back, leaving the ProjectRequest
+            // in `Accepted` status BUT no Deal row. That is a
+            // narrow fail-closed window — the route layer maps
+            // the typed exception to `PROJECT_REQUEST_TERMS_DRAFT_INVALID`
+            // (400). The (deals.projectRequestId) UNIQUE index
+            // means a SAME-attempt retry converges: the same
+            // (projectRequestId) row is already `Accepted` and
+            // the retry hits the `ALREADY_RESPONDED` branch.
+            // The next accept attempt by a different seller
+            // member of the same Workspace is the only path
+            // forward; the AI candidate is generated exactly
+            // once on the winning path.
+            const draft = await outcome.input.produceInitialTermsVersionDraft();
             const createdTv = await tx.termsVersion.create({
               data: {
                 dealId: deal.id,

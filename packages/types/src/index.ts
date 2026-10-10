@@ -3083,6 +3083,17 @@ export const bg5DealViewV1Schema = z
     currentTermsVersion: bg5TermsVersionPublicV1Schema.nullable(),
     currentApprovals: z.array(bg5DealApprovalPublicV1Schema).max(2),
     sellerConsent: bg5SellerConsentProjectionV1Schema.nullable(),
+    // M2 (#88) Codex finding: render the permission CTA and the
+    // approve CTA MUTUALLY EXCLUSIVELY. The page needs an explicit
+    // signal that the authenticated human (acting on the deal's
+    // buyer or seller side) holds an explicit `DealApprover`
+    // authorization for that Workspace. The server derives this
+    // from the durable `deal_approvers` row keyed by
+    // (workspaceId, userId) + the authenticated `UserAccount.id`.
+    // Null when the human is not a current member of either
+    // side (the page already requires membership) or when the
+    // acting Workspace id is not a party to this Deal.
+    actingSideHasDealApprover: z.boolean(),
   })
   .strict();
 export type Bg5DealViewV1 = z.infer<typeof bg5DealViewV1Schema>;
@@ -3189,15 +3200,19 @@ export const m2DealApproverConfirmationVersionV1 = "m2-deal-approver-v1" as cons
 //
 // Minimal allow-listed DealApprover projection. The application MUST
 // NOT serialize `grantedByUserId` or the workspace's `ownerUserId`;
-// the public envelope exposes only the bounded identifier and the
-// grant timestamp. Customer-facing copy refers to this as
-// "permission to approve terms", never `DealApprover` or provider /
-// governance internals (ticket #88; M2 UX contract).
+// the public envelope exposes only the bounded permission
+// identifier, the Workspace it was granted for, and the grant
+// timestamp. The human account identity stays on the private
+// `DealApprover` row + the `DealApproverAcceptance` evidence
+// table — it is NEVER serialized into the public DTO (AGENTS.md:
+// "Do not expose account identity, membership, wallet, embedding,
+// or storage internals publicly"). Customer-facing copy refers
+// to this as "permission to approve terms", never `DealApprover`
+// or provider / governance internals (ticket #88; M2 UX contract).
 export const dealApproverPublicV1Schema = z
   .object({
     dealApproverId: z.string().min(1).max(128),
     workspaceId: z.string().min(1).max(128),
-    userId: z.string().min(1).max(128),
     grantedAt: z.string().datetime(),
   })
   .strict();

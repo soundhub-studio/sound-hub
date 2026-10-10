@@ -216,13 +216,15 @@ export class DealApproverService {
 export function toPublicDealApprover(persisted: {
   readonly id: string;
   readonly workspaceId: string;
-  readonly userId: string;
   readonly grantedAt: Date;
 }): DealApproverPublicV1 {
+  // M2 (#88) Codex finding: account identity must NOT cross the
+  // public boundary. The (workspaceId, userId) tuple stays on
+  // the private `DealApprover` row + `DealApproverAcceptance`
+  // evidence table.
   return {
     dealApproverId: persisted.id,
     workspaceId: persisted.workspaceId,
-    userId: persisted.userId,
     grantedAt: persisted.grantedAt.toISOString(),
   };
 }

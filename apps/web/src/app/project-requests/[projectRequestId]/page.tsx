@@ -18,7 +18,7 @@
 // requires a separate ProjectBrief GET endpoint the M2 spec
 // already calls out but does not require for #88.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import type { ProjectRequestPublicV1 } from "@soundhub/types";
 import { useSession } from "../../components/SessionProvider";
@@ -106,6 +106,12 @@ export default function ProjectRequestDetailPage({
     },
     [projectRequestId],
   );
+  // M2 (#88) Codex finding: stable ref so the post-bootstrap
+  // reload effect does not depend on `reload`'s identity (which
+  // changes on every render). The ref is updated on every render
+  // so the LATEST closure is always invoked.
+  const reloadRef = useRef<typeof reload>(reload);
+  reloadRef.current = reload;
 
   // Bootstrap: pick the first matching Workspace and load.
   useEffect(() => {
@@ -139,13 +145,30 @@ export default function ProjectRequestDetailPage({
     };
   }, [user, projectRequestId, request]);
 
-  // After a successful bootstrap, keep the view in sync with the
-  // active selection (the user may switch acting Workspace via
-  // the Shell selector).
+  // After a successful bootstrap, keep the view in sync with
+  // the active selection (the user may switch acting Workspace
+  // via the Shell selector).
+  //
+  // M2 (#88) Codex finding: the previous effect listed
+  // `request` in its dependency array, which triggered an
+  // unbounded `reload → setRequest → effect → reload` loop
+  // after the bootstrap succeeded. The reload runs when the
+  // user explicitly changes the acting Workspace OR the route
+  // bootstraps; the response object is intentionally excluded
+  // so the page does not re-render itself.
   useEffect(() => {
-    if (!actingWorkspaceId || !request) return;
-    void reload(actingWorkspaceId);
-  }, [actingWorkspaceId, reload, request]);
+    if (!actingWorkspaceId) return;
+    if (!bootstrapComplete) return;
+    // M2 (#88) Codex finding: this effect lists `request` in
+    // its dependency array. The reload itself updates `request`,
+    // which re-runs the effect, which calls reload again, etc.
+    // — an unbounded loop after the bootstrap succeeded. We
+    // therefore use a ref so the effect captures the LATEST
+    // reload closure without depending on its identity (the
+    // identity changes on every render because `reload` closes
+    // over `projectRequestId`, `setError`, `setRequest`).
+    void reloadRef.current(actingWorkspaceId);
+  }, [actingWorkspaceId, bootstrapComplete]);
 
   const onAccept = useCallback(async () => {
     if (!actingWorkspaceId || !projectRequestId) return;

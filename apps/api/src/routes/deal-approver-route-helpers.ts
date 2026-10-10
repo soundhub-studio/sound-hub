@@ -92,6 +92,30 @@ export function validateDealApproverBody<T>(
   const parsed = schema.safeParse(raw);
   if (!parsed.success) {
     const zodError = parsed.error as ZodError;
+    // M2 (#88) Codex finding: a stale or unknown
+    // `confirmationVersion` is a typed 422
+    // (`DEAL_APPROVER_CONFIRMATION_VERSION_MISMATCH`), NOT a
+    // generic 400. Clients must be able to distinguish an
+    // outdated attestation from a malformed request so the
+    // customer can re-read the current version. The application
+    // boundary keeps the closed canonical version in one place
+    // (the shared Zod `literal(...)`); a non-literal value is
+    // the only reason the Zod path emits a typed mismatch here.
+    const confirmationVersionIssue = zodError.issues.find(
+      (issue) => issue.path[0] === "confirmationVersion",
+    );
+    if (confirmationVersionIssue !== undefined) {
+      writeSafeError(
+        res,
+        buildSafeError(
+          "DEAL_APPROVER_CONFIRMATION_VERSION_MISMATCH",
+          "The current version of the approval-authority attestation has changed. Please reload and try again.",
+          undefined,
+          requestId,
+        ),
+      );
+      return null;
+    }
     writeSafeError(
       res,
       buildSafeError(

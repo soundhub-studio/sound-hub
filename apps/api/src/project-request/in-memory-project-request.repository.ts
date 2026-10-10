@@ -244,7 +244,14 @@ export class InMemoryProjectRequestRepository implements ProjectRequestRepositor
           input: declineInput,
         }),
       };
-      const outcome = useCase({ sellerAuthority, projectRequest: existing }, tools);
+      const outcome = useCase(
+        {
+          sellerAuthority,
+          projectRequest: existing,
+          produceInitialTermsVersionDraft: input.produceInitialTermsVersionDraft ?? null,
+        },
+        tools,
+      );
 
       if (outcome.kind === "reject") {
         return { ok: false, reason: outcome.reason };
@@ -285,8 +292,15 @@ export class InMemoryProjectRequestRepository implements ProjectRequestRepositor
         // initial TermsVersion (v1) inside the SAME logical commit
         // as the Deal. The (dealId, version) UNIQUE check below
         // mirrors the durable convergence key the Prisma adapter
-        // enforces.
-        const draft = outcome.input.initialTermsVersionDraft;
+        // enforces. M2 (#88) Codex finding: the AI draft is
+        // produced INSIDE the transaction via the thunk the use
+        // case closure captured; the adapter is therefore NOT
+        // invoked for unauthorized / already-responded /
+        // losing-concurrent attempts. The thunk is awaited
+        // here so a strict-validation failure propagates as a
+        // thrown error and the surrounding transaction rolls
+        // back with no state change.
+        const draft = await outcome.input.produceInitialTermsVersionDraft();
         if (!draft) {
           // Defensive guard: the service must supply a draft
           // candidate via the use-case closure. If it did not,

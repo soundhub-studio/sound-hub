@@ -21,6 +21,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DealTermsService, DealTermsError } from "./deal-terms.service.js";
 import { InMemoryDealTermsRepository } from "./in-memory-deal-terms.repository.js";
+import { InMemoryDealApproverRepository } from "../deal-approver/in-memory-deal-approver.repository.js";
 import { WorkspaceAuthorizationService } from "../services/workspace-authorization.service.js";
 import { InMemoryAuthRepository } from "../auth-repository/in-memory-auth-repository.js";
 import type {
@@ -86,6 +87,11 @@ interface Fixture {
   service: DealTermsService;
   repo: InMemoryDealTermsRepository;
   authz: WorkspaceAuthorizationService;
+  // M2 (#88) Codex finding: the in-memory DealApprover
+  // adapter is wired into the fixture so the
+  // `actingSideHasDealApprover` predicate is observable in
+  // the tests below.
+  dealApproverRepository: InMemoryDealApproverRepository;
   clock: { current: Date };
   // ProjectRequestRepository the service is wired with. Tests that
   // want to exercise the seller-consent projection can call
@@ -194,14 +200,39 @@ function buildFixture(opts?: { dealStatus?: "Negotiating" | "Active" }): Fixture
   // ProjectRequest. The default stub holds nothing, so the projection
   // is null unless the test seeds it via `projectRequestRepository.seed(...)`.
   const projectRequestRepository = new StubProjectRequestRepository();
+  // M2 (#88) Codex finding: the Deal view needs the durable
+  // `(workspaceId, userId)` `deal_approvers` row. The fixture
+  // wires the in-memory DealApprover adapter so the
+  // `actingSideHasDealApprover` predicate is observable in
+  // the tests below.
+  const dealApproverRepository = new InMemoryDealApproverRepository();
+  dealApproverRepository.seedWorkspace({
+    workspaceId: BUYER_WORKSPACE_ID,
+    status: "Active",
+    type: "Personal",
+  });
+  dealApproverRepository.seedWorkspace({
+    workspaceId: SELLER_WORKSPACE_ID,
+    status: "Active",
+    type: "Personal",
+  });
+  dealApproverRepository.seedMembership({
+    userId: BUYER_USER_ID,
+    workspaceId: BUYER_WORKSPACE_ID,
+  });
+  dealApproverRepository.seedMembership({
+    userId: SELLER_USER_ID,
+    workspaceId: SELLER_WORKSPACE_ID,
+  });
   const service = new DealTermsService({
     dealTermsRepository: repo,
     workspaceAuthorizationService: authz,
     projectRequestRepository,
+    dealApproverRepository,
     now: () => clock.current,
   });
 
-  return { service, repo, clock, authz, projectRequestRepository };
+  return { service, repo, clock, authz, projectRequestRepository, dealApproverRepository };
 }
 
 // ---------------------------------------------------------------------------
@@ -394,6 +425,60 @@ test("public DealApproval DTO carries no approvedByUserId / dealApproverId / dra
 // Buyer and seller approvals are independent durable records for the same
 // current TermsVersion.
 // ---------------------------------------------------------------------------
+
+// M2 (#88) Codex finding: the Deal view must surface a derived
+// `actingSideHasDealApprover` signal so the web can render
+// the permission CTA and the approve CTA MUTUALLY EXCLUSIVELY.
+test("getDeal surfaces actingSideHasDealApprover=false when no DealApprover row exists", async () => {
+  const { service, dealApproverRepository } = buildFixture();
+  // The fixture does NOT seed a (workspaceId, userId) row.
+  void dealApproverRepository;
+  const view = await service.getDeal({
+    userAccountId: BUYER_USER_ID,
+    actingWorkspaceId: BUYER_WORKSPACE_ID,
+    dealId: DEAL_ID,
+  });
+  assert.equal(view.actingSideHasDealApprover, false);
+});
+
+test("getDeal surfaces actingSideHasDealApprover=true when a DealApprover row exists for the acting (workspaceId, userId)", async () => {
+  const { service, dealApproverRepository } = buildFixture();
+  // Seed a DealApprover row for the buyer side so the lookup
+  // returns a hit.
+  dealApproverRepository.seedDealApprover({
+    id: "da-buyer",
+    workspaceId: BUYER_WORKSPACE_ID,
+    userId: BUYER_USER_ID,
+    grantedByUserId: BUYER_USER_ID,
+    grantedAt: new Date(),
+  });
+  const view = await service.getDeal({
+    userAccountId: BUYER_USER_ID,
+    actingWorkspaceId: BUYER_WORKSPACE_ID,
+    dealId: DEAL_ID,
+  });
+  assert.equal(view.actingSideHasDealApprover, true);
+});
+
+test("getDeal surfaces actingSideHasDealApprover=false when a DealApprover row exists for a DIFFERENT user on the same Workspace", async () => {
+  // The (workspaceId, userId) tuple is the only durable key.
+  // A row for SOMEONE ELSE on the same Workspace does not
+  // authorize the acting human.
+  const { service, dealApproverRepository } = buildFixture();
+  dealApproverRepository.seedDealApprover({
+    id: "da-other",
+    workspaceId: BUYER_WORKSPACE_ID,
+    userId: OTHER_USER_ID,
+    grantedByUserId: OTHER_USER_ID,
+    grantedAt: new Date(),
+  });
+  const view = await service.getDeal({
+    userAccountId: BUYER_USER_ID,
+    actingWorkspaceId: BUYER_WORKSPACE_ID,
+    dealId: DEAL_ID,
+  });
+  assert.equal(view.actingSideHasDealApprover, false);
+});
 
 test("buyer approval and seller approval are independent records; both can coexist for the current version", async () => {
   const { service } = buildFixture();

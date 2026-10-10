@@ -224,6 +224,11 @@ function getDeal(
             currentTermsVersion: result.currentTermsVersion,
             currentApprovals: result.currentApprovals,
             sellerConsent: result.sellerConsent,
+            // M2 (#88) Codex finding: pass the derived
+            // acting-side authorization signal through the
+            // strict Zod schema so the public envelope stays
+            // a 1:1 mirror of the contract.
+            actingSideHasDealApprover: result.actingSideHasDealApprover,
           },
         },
         requestId,

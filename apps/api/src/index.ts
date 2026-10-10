@@ -396,6 +396,18 @@ export function buildApp(options: AppOptions = {}): BuiltApp {
       workspaceAuthorizationService,
     });
 
+  // M2 (#88): DealApprover JIT permission setup service. The
+  // composition root owns the Prisma adapter; the service is the
+  // only boundary the route and tests depend on. Provisioning is
+  // capability-neutral, Personal-Workspace-scoped, and never
+  // creates a `DealApproval` (the approval command remains BG5's
+  // `recordApprovalInTransaction`). The DealTermsService also
+  // reads from this repository to derive the
+  // `actingSideHasDealApprover` signal on the Deal view, so
+  // it must be constructed BEFORE the DealTermsService.
+  const dealApproverRepository =
+    options.dealApproverRepository ?? new PrismaDealApproverRepository(prisma);
+
   // BG5 DealTerms service. The composition root owns the Prisma
   // adapter; the service is the only boundary the route and tests
   // depend on. The deterministic AI adapter is the buildathon-only
@@ -407,16 +419,13 @@ export function buildApp(options: AppOptions = {}): BuiltApp {
       dealTermsRepository,
       workspaceAuthorizationService,
       projectRequestRepository,
+      // M2 (#88) Codex finding: the Deal view needs the
+      // durable `(workspaceId, userId)` `deal_approvers` row
+      // so the web can render the permission CTA and the
+      // approve CTA MUTUALLY EXCLUSIVELY. The lookup is
+      // fail-closed when the repository is omitted.
+      dealApproverRepository,
     });
-
-  // M2 (#88): DealApprover JIT permission setup service. The
-  // composition root owns the Prisma adapter; the service is the
-  // only boundary the route and tests depend on. Provisioning is
-  // capability-neutral, Personal-Workspace-scoped, and never
-  // creates a `DealApproval` (the approval command remains BG5's
-  // `recordApprovalInTransaction`).
-  const dealApproverRepository =
-    options.dealApproverRepository ?? new PrismaDealApproverRepository(prisma);
   const dealApproverService =
     options.dealApproverService ??
     new DealApproverService({

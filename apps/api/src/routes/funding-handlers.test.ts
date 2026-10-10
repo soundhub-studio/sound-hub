@@ -177,6 +177,11 @@ class FakeDealTermsService {
     readonly currentTermsVersion: Bg5TermsVersionPublicV1 | null;
     readonly currentApprovals: readonly Bg5DealApprovalPublicV1[];
     readonly sellerConsent: Bg5SellerConsentProjectionV1 | null;
+    // M2 (#88) Codex finding: the Bg5DealViewV1 schema
+    // requires the `actingSideHasDealApprover` field. The
+    // funding route does not depend on it, but the strict
+    // shared Zod schema fails closed without it.
+    readonly actingSideHasDealApprover: boolean;
   }> {
     this.calls.push(input);
     return {
@@ -184,6 +189,12 @@ class FakeDealTermsService {
       currentTermsVersion: makeCurrentTermsVersion(),
       currentApprovals: makeApprovals(),
       sellerConsent: this.sellerConsentOverride,
+      // M2 (#88) Codex finding: the Bg5DealViewV1 schema
+      // requires the `actingSideHasDealApprover` field on the
+      // public envelope. The funding route does not depend on
+      // it, but the strict shared Zod schema fails closed
+      // without it.
+      actingSideHasDealApprover: true,
     };
   }
 }
@@ -202,6 +213,12 @@ type DealTermsServiceShape = {
     currentTermsVersion: Bg5TermsVersionPublicV1 | null;
     currentApprovals: readonly Bg5DealApprovalPublicV1[];
     sellerConsent: Bg5SellerConsentProjectionV1 | null;
+    // M2 (#88) Codex finding: the Bg5DealViewV1 schema
+    // requires the `actingSideHasDealApprover` field. The
+    // funding route does not depend on it, but the strict
+    // shared Zod schema must include the new field on every
+    // public envelope.
+    actingSideHasDealApprover: boolean;
   }>;
 };
 type FundingServiceShape = {
@@ -264,6 +281,12 @@ test("(a) successful fund response containing the canonical sellerConsent projec
       currentTermsVersion: Bg5TermsVersionPublicV1 | null;
       currentApprovals: Bg5DealApprovalPublicV1[];
       sellerConsent: Bg5SellerConsentProjectionV1 | null;
+      // M2 (#88) Codex finding: the Bg5DealViewV1 schema
+      // requires the `actingSideHasDealApprover` field. The
+      // funding route does not depend on it, but the strict
+      // shared Zod schema must include the new field on every
+      // public envelope.
+      actingSideHasDealApprover: boolean;
     };
     fundingStatus: Bg6FundingConfirmationPublicV1;
   };
@@ -406,11 +429,17 @@ test("(d) when sellerConsent is omitted from the manual reconstruction the serve
       // Deliberately omit `sellerConsent` here — the Zod schema
       // requires it. We intentionally use `as` to bypass the type
       // and prove the runtime validator rejects it.
+      // M2 (#88) Codex finding: include the
+      // `actingSideHasDealApprover` field so the runtime
+      // validator's missing-field failure isolates on
+      // `sellerConsent`.
+      actingSideHasDealApprover: boolean;
     }> {
       return {
         deal: makeActiveDeal(),
         currentTermsVersion: makeCurrentTermsVersion(),
         currentApprovals: makeApprovals(),
+        actingSideHasDealApprover: true,
       };
     }
   }

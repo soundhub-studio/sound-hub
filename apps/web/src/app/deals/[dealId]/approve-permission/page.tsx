@@ -26,28 +26,34 @@ import { useSession } from "../../../components/SessionProvider";
 import { Card } from "../../../components/ui/Card";
 import { provisionDealApprover } from "../../../lib/deal-approver-client";
 import { m2DealApproverConfirmationVersionV1 } from "@soundhub/types";
-import { findVisibleDeal } from "../../find-visible-deal";
 import { fetchDeal } from "../../../lib/deal-terms-client";
 
 interface ApprovePermissionPageProps {
   readonly params: Promise<{ readonly dealId: string }>;
+  readonly searchParams: Promise<{ readonly [key: string]: string | string[] | undefined }>;
 }
-
-const IDEMPOTENCY_KEY_NAMESPACE = "11111111-1111-1111-1111-";
 
 function generateIdempotencyKey(): string {
-  // The web never has access to a crypto-grade UUID generator in
-  // a portable way; the deterministic prefix keeps the key
-  // human-readable in the DB while the random suffix satisfies
-  // the strict Zod `z.string().uuid()` boundary.
-  const random = `${Date.now().toString(16)}-${Math.random().toString(16).slice(2, 14)}`;
-  return `${IDEMPOTENCY_KEY_NAMESPACE}${random}-1111-1111-1111-111111111111`;
+  // M2 (#88) Codex finding: the previous generator produced a
+  // value that failed the strict `z.string().uuid()` boundary
+  // at the route layer, surfacing a generic
+  // `DEAL_APPROVER_INVALID` (400) on every submission. The web
+  // has access to a crypto-grade UUID generator via the
+  // `crypto` global (available in modern browsers and Node 19+).
+  // The key is generated once per page lifetime and retained
+  // across retries so a same-key retry converges on the
+  // existing evidence row.
+  return crypto.randomUUID();
 }
 
-export default function ApprovePermissionPage({ params }: ApprovePermissionPageProps): JSX.Element {
+export default function ApprovePermissionPage({
+  params,
+  searchParams,
+}: ApprovePermissionPageProps): JSX.Element {
   const router = useRouter();
   const { user, loading } = useSession();
   const [resolvedDealId, setResolvedDealId] = useState<string>("");
+  const [queryActingWorkspaceId, setQueryActingWorkspaceId] = useState<string>("");
   useEffect(() => {
     let cancelled = false;
     void params.then((p) => {
@@ -59,6 +65,29 @@ export default function ApprovePermissionPage({ params }: ApprovePermissionPageP
   }, [params]);
   const dealId = resolvedDealId;
 
+  // M2 (#88) Codex finding: the source URL must carry the
+  // acting Workspace id. A human who belongs to BOTH Deal-party
+  // Workspaces would otherwise have setup silently granted
+  // permission to the wrong Workspace (whichever the bootstrap
+  // helper happened to try first). The previous implementation
+  // also forced the human to discover the right selection on
+  // the destination page; the source URL is the only reliable
+  // signal.
+  useEffect(() => {
+    let cancelled = false;
+    void searchParams.then((p) => {
+      if (cancelled) return;
+      const raw = p.actingWorkspaceId;
+      const value = Array.isArray(raw) ? raw[0] : raw;
+      if (typeof value === "string" && value.length > 0 && value.length <= 128) {
+        setQueryActingWorkspaceId(value);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [searchParams]);
+
   const [actingWorkspaceId, setActingWorkspaceId] = useState<string>("");
   const [bootstrapComplete, setBootstrapComplete] = useState<boolean>(false);
   const [dealStatus, setDealStatus] = useState<"loading" | "found" | "missing">("loading");
@@ -69,25 +98,57 @@ export default function ApprovePermissionPage({ params }: ApprovePermissionPageP
   const idempotencyKeyRef = useRef<string>("");
 
   // The page is opened from a context where the human is acting on
-  // a specific Deal. The Shell selector already chose the
-  // Workspace; we resolve the deal via the existing findVisibleDeal
-  // helper so a cross-Workspace link can still surface the
-  // pending Deal.
+  // a specific Deal. The source URL must carry the acting
+  // Workspace id; we revalidate that selection against the
+  // Deal view (the Workspace must be a current member AND a
+  // party to this Deal) and refuse to silently fall back to
+  // another Workspace when the human belongs to both Deal
+  // parties.
+  //
+  // M2 (#88) Codex finding: the previous bootstrap searched
+  // every membership the human held and silently chose the
+  // first Workspace that could read the Deal. A human who is
+  // a member of BOTH Deal-party Workspaces would have setup
+  // granted to whichever Workspace happened to try first,
+  // not the Workspace the human was acting as. The source
+  // URL is the only reliable signal.
   useEffect(() => {
     if (!user || !dealId) return;
-    let cancelled = false;
-    const bootstrapKey = `${dealId}:${user.userAccountId}`;
+    if (queryActingWorkspaceId === "") {
+      // No selection in the source URL — fail closed. The
+      // /deals/:dealId page always threads the acting
+      // Workspace through the URL.
+      setDealStatus("missing");
+      setBootstrapComplete(true);
+      return;
+    }
+    // Membership check: the human must be a current member of
+    // the source-URL acting Workspace.
+    const memberOfSelection = user.workspaces.some((w) => w.workspaceId === queryActingWorkspaceId);
+    if (!memberOfSelection) {
+      setDealStatus("missing");
+      setBootstrapComplete(true);
+      return;
+    }
     if (idempotencyKeyRef.current === "") {
       idempotencyKeyRef.current = generateIdempotencyKey();
     }
-    void findVisibleDeal({
-      dealId,
-      workspaceIds: user.workspaces.map((w) => w.workspaceId),
-      fetchDeal,
-    })
+    let cancelled = false;
+    // Re-resolve the Deal against the EXACT selection so the
+    // page confirms the Workspace is actually a party to this
+    // Deal (and not, e.g., an unrelated Workspace the human
+    // belongs to but never bought or sold with).
+    void fetchDeal(dealId, queryActingWorkspaceId)
       .then((result) => {
         if (cancelled) return;
-        setActingWorkspaceId(result.actingWorkspaceId);
+        const buyerId = result.deal.deal.buyerWorkspaceId;
+        const sellerId = result.deal.deal.sellerWorkspaceId;
+        if (queryActingWorkspaceId !== buyerId && queryActingWorkspaceId !== sellerId) {
+          setDealStatus("missing");
+          setBootstrapComplete(true);
+          return;
+        }
+        setActingWorkspaceId(queryActingWorkspaceId);
         setDealStatus("found");
         setBootstrapComplete(true);
       })
@@ -99,11 +160,7 @@ export default function ApprovePermissionPage({ params }: ApprovePermissionPageP
     return () => {
       cancelled = true;
     };
-    // Reference the key only to prevent duplicate bootstrap
-    // runs; we deliberately do not include idempotencyKeyRef in
-    // deps because it's a stable ref for the page lifetime.
-    void bootstrapKey;
-  }, [user, dealId]);
+  }, [user, dealId, queryActingWorkspaceId]);
 
   const onConfirm = useCallback(async () => {
     if (!actingWorkspaceId || !dealId) return;
