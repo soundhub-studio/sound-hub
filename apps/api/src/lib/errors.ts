@@ -354,6 +354,26 @@ export function mapStatus(code: ApiErrorCodeV1): number {
       // structurally incomplete without the explicit confirmation
       // field.
       return 400;
+    // M2 (#88): Personal-Workspace DealApprover JIT permission setup.
+    // The mapping mirrors the existing M2 patterns: 400 for malformed
+    // bodies (missing/invalid `actingWorkspaceId`, `confirmationVersion`,
+    // or `idempotencyKey`), 403 for authorization rejections collapsed
+    // by the safe envelope (non-Personal acting Workspace, non-Active
+    // Workspace, or non-current member all surface here), 409 for
+    // a different idempotencyKey against an already-provisioned
+    // (workspaceId, userId) tuple, 422 for the closed
+    // `confirmationVersion` mismatch, 500 for unexpected internal
+    // failures.
+    case "DEAL_APPROVER_INVALID":
+      return 400;
+    case "DEAL_APPROVER_FORBIDDEN":
+      return 403;
+    case "DEAL_APPROVER_ALREADY_PROVISIONED":
+      return 409;
+    case "DEAL_APPROVER_CONFIRMATION_VERSION_MISMATCH":
+      return 422;
+    case "DEAL_APPROVER_INTERNAL_FAILED":
+      return 500;
   }
 }
 

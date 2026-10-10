@@ -628,6 +628,34 @@ export const apiErrorCodeV1Schema = z.enum([
   // confirmation field. The flag is transient and is never persisted
   // on the sample row.
   "AUDIO_SAMPLE_FINAL_REMOVAL_CONFIRMATION_REQUIRED",
+  // M2 (#88): Personal-Workspace DealApprover JIT permission setup
+  // surface. The codes never expose private audit identifiers
+  // (`grantedByUserId`, `dealApproverId`); they only carry the
+  // bounded typed rejection needed for the safe envelope. Status
+  // mapping in `apps/api/src/lib/errors.ts` is the single source of
+  // truth.
+  // 400 — the request body failed runtime validation (missing or
+  // malformed `actingWorkspaceId`, `confirmationVersion`, or
+  // `idempotencyKey`).
+  "DEAL_APPROVER_INVALID",
+  // 403 — the acting Workspace is not Personal, the Workspace is not
+  // Active, the authenticated human is not a current member, or some
+  // other authorization rejection collapsed by the safe envelope.
+  "DEAL_APPROVER_FORBIDDEN",
+  // 409 — a different idempotencyKey against an already-provisioned
+  // (workspaceId, userId) tuple, OR a same-key retry after a
+  // committed failure whose persisted row is durable evidence of the
+  // collapse. A same-key retry after a successful provisioning
+  // converges on the existing row and does NOT surface this code.
+  "DEAL_APPROVER_ALREADY_PROVISIONED",
+  // 422 — the supplied `confirmationVersion` is not the closed
+  // canonical value (`m2-deal-approver-v1`). The human must accept
+  // the current version; a stale one is a typed rejection so the
+  // application boundary cannot accept an unknown / future version.
+  "DEAL_APPROVER_CONFIRMATION_VERSION_MISMATCH",
+  // 500 — unexpected internal failure outside the typed
+  // DealApproverError surface.
+  "DEAL_APPROVER_INTERNAL_FAILED",
 ]);
 export type ApiErrorCodeV1 = z.infer<typeof apiErrorCodeV1Schema>;
 
@@ -3097,6 +3125,79 @@ export const bg5ApproveTermsResponseV1Schema = z
   })
   .strict();
 export type Bg5ApproveTermsResponseV1 = z.infer<typeof bg5ApproveTermsResponseV1Schema>;
+
+// ===========================================================================
+// Milestone 2 (#88) — Personal-Workspace DealApprover JIT permission setup
+//
+// Per the reconciled M2 specification (and ticket #88), provisioning a
+// `DealApprover` authorization is capability-neutral, Personal-Workspace-
+// scoped, and explicit. The human accepts a closed, versioned
+// approval-authority attestation before the authorization row exists.
+// Setup is offered as optional dashboard readiness AND just-in-time
+// from either party's attempted approval; it NEVER approves terms.
+//
+// This slice owns the schema-only surface for #88A. The route, the
+// repository, and the UI land in later slices (#88C, #88D, #88E).
+// ===========================================================================
+
+// ---------- Closed confirmation version ----------
+//
+// The closed canonical version for the Personal-Workspace
+// approval-authority attestation. The application boundary enforces
+// this exact value at the trusted boundary; a stale or unknown version
+// fails closed with `DEAL_APPROVER_CONFIRMATION_VERSION_MISMATCH`. The
+// suffix pattern matches the established M2 attestation family
+// (e.g., `m2-service-activation-v1`, `m2-seller-profile-publication-v1`,
+// `m2-audio-confirmation-v1`).
+export const m2DealApproverConfirmationVersionV1 = "m2-deal-approver-v1" as const;
+
+// ---------- Public DTOs (strict allow-list) ----------
+//
+// Minimal allow-listed DealApprover projection. The application MUST
+// NOT serialize `grantedByUserId` or the workspace's `ownerUserId`;
+// the public envelope exposes only the bounded identifier and the
+// grant timestamp. Customer-facing copy refers to this as
+// "permission to approve terms", never `DealApprover` or provider /
+// governance internals (ticket #88; M2 UX contract).
+export const dealApproverPublicV1Schema = z
+  .object({
+    dealApproverId: z.string().min(1).max(128),
+    workspaceId: z.string().min(1).max(128),
+    userId: z.string().min(1).max(128),
+    grantedAt: z.string().datetime(),
+  })
+  .strict();
+export type DealApproverPublicV1 = z.infer<typeof dealApproverPublicV1Schema>;
+
+// ---------- Request / response schemas ----------
+//
+// Provision request body. The acting Workspace id is required so the
+// route can revalidate current Personal-Workspace membership. The
+// closed `confirmationVersion` is REQUIRED — the human must accept the
+// current version of the approval-authority attestation. The
+// `idempotencyKey` is a client-supplied UUID; same-key retry converges
+// on the persisted row and does NOT create a duplicate.
+export const provisionDealApproverRequestV1Schema = z
+  .object({
+    actingWorkspaceId: z.string().min(1).max(128),
+    confirmationVersion: z.literal(m2DealApproverConfirmationVersionV1),
+    idempotencyKey: z.string().uuid(),
+  })
+  .strict();
+export type ProvisionDealApproverRequestV1 = z.infer<typeof provisionDealApproverRequestV1Schema>;
+
+// Provision response. Wraps the allow-listed `DealApprover` projection.
+// The route MUST NOT serialize the `grantedByUserId`, the persisted
+// `confirmationVersion` audit row, the `idempotencyKey`, or the
+// `requestId` — those live only on the durable `DealApproverAcceptance`
+// evidence row.
+export const provisionDealApproverResponseV1Schema = z
+  .object({
+    ok: z.literal(true),
+    dealApprover: dealApproverPublicV1Schema,
+  })
+  .strict();
+export type ProvisionDealApproverResponseV1 = z.infer<typeof provisionDealApproverResponseV1Schema>;
 
 // Read the Deal view. No request body. The route accepts the Deal id
 // in the path and the acting Workspace id as a query parameter so
