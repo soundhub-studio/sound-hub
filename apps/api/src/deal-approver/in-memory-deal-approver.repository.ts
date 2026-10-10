@@ -151,15 +151,15 @@ export class InMemoryDealApproverRepository implements DealApproverRepository {
       if (existingAcceptanceRow !== null) {
         const existing = this.dealApprovers.get(existingAcceptanceRow.dealApproverId);
         if (existing === undefined) {
-          return { ok: false, reason: "CONFLICT" };
+          return Promise.resolve({ ok: false, reason: "CONFLICT" });
         }
-        return {
+        return Promise.resolve({
           ok: true,
           value: {
             dealApprover: existing,
             acceptance: existingAcceptanceRow,
           },
-        };
+        });
       }
 
       const tools: ProvisionDealApproverUseCaseTools = {
@@ -174,7 +174,7 @@ export class InMemoryDealApproverRepository implements DealApproverRepository {
       };
       const outcome = useCase({ authority: snapshot }, tools);
       if (outcome.kind === "reject") {
-        return { ok: false, reason: outcome.reason };
+        return Promise.resolve({ ok: false, reason: outcome.reason });
       }
 
       // Persist both rows inside the single in-memory "transaction"
@@ -199,7 +199,7 @@ export class InMemoryDealApproverRepository implements DealApproverRepository {
         requestId: outcome.input.requestId,
       };
       this.acceptances.set(acceptance.id, acceptance);
-      return { ok: true, value: { dealApprover, acceptance } };
+      return Promise.resolve({ ok: true, value: { dealApprover, acceptance } });
     } finally {
       this.inflight = false;
     }

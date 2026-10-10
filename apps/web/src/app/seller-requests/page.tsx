@@ -306,7 +306,13 @@ function RequestRow({
           className="text-sm font-medium text-gray-900 break-words"
           data-testid="seller-request-title"
         >
-          From {buyerWorkspaceLabel} — {offeringLabel}
+          <Link
+            href={`/project-requests/${request.projectRequestId}`}
+            className="text-blue-600 hover:text-blue-700 font-medium focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600 rounded"
+            data-testid="seller-request-title-link"
+          >
+            From {buyerWorkspaceLabel} — {offeringLabel}
+          </Link>
         </p>
         <p
           className="text-xs text-gray-600 break-words line-clamp-3"
