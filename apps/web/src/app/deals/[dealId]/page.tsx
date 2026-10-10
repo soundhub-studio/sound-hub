@@ -367,6 +367,17 @@ export default function DealPage({ params }: DealPageProps): JSX.Element {
     currentTermsVersion !== null &&
     !alreadyApproved &&
     currentTermsVersion.isCurrentVersion;
+  // M2 (#88): a Personal-Workspace member who lacks an explicit
+  // `DealApprover` authorization sees the aubergine "Permission
+  // to approve terms" CTA. The CTA routes to the JIT setup page,
+  // which (on success) returns to this same Deal and current
+  // TermsVersion. The Approve action itself remains a separate
+  // explicit step after setup.
+  const showPermissionCta =
+    capabilityRequired !== null &&
+    currentTermsVersion !== null &&
+    currentTermsVersion.isCurrentVersion &&
+    !alreadyApproved;
   const dealSummaryCopy = buildDealSummaryCopy(deal.status);
 
   // BG6 funding state. The FundingCard renders a single allow-listed
@@ -572,6 +583,13 @@ export default function DealPage({ params }: DealPageProps): JSX.Element {
               onApprove={() => {
                 void onApprove();
               }}
+              onPermissionCta={
+                showPermissionCta
+                  ? () => {
+                      window.location.assign(`/deals/${deal.dealId}/approve-permission`);
+                    }
+                  : null
+              }
               submitting={submitting}
               showDraftButton={shouldShowDraftTermsControl(
                 deal.status,
@@ -612,6 +630,7 @@ function TermsVersionView({
   sellerWorkspaceId,
   onDraft,
   onApprove,
+  onPermissionCta,
   submitting,
   showDraftButton,
   showApproveButton,
@@ -622,6 +641,11 @@ function TermsVersionView({
   readonly sellerWorkspaceId: string;
   readonly onDraft: () => void;
   readonly onApprove: () => void;
+  // M2 (#88): the aubergine "Permission to approve terms" CTA
+  // routes the human to the JIT setup page when set. Null hides
+  // the CTA (the human is on a different side, already
+  // approved, or the page is read-only).
+  readonly onPermissionCta: (() => void) | null;
   readonly submitting: "draft" | "approve" | "fund" | null;
   readonly showDraftButton: boolean;
   readonly showApproveButton: boolean;
@@ -708,6 +732,19 @@ function TermsVersionView({
         </ul>
       </div>
       <div className="flex flex-wrap gap-2">
+        {onPermissionCta && (
+          <button
+            type="button"
+            onClick={() => {
+              onPermissionCta();
+            }}
+            disabled={submitting !== null}
+            className="inline-flex items-center justify-center min-h-[44px] py-2 px-4 text-sm font-medium text-white bg-aubergine hover:bg-aubergine-hover rounded focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-aubergine disabled:opacity-50"
+            data-testid="deal-permission-cta"
+          >
+            Permission to approve terms
+          </button>
+        )}
         {showDraftButton && (
           <button
             type="button"
@@ -728,7 +765,7 @@ function TermsVersionView({
               void onApprove();
             }}
             disabled={submitting !== null}
-            className="bg-green-600 text-white px-3 py-1.5 rounded-md text-sm font-medium hover:bg-green-700 disabled:opacity-50 transition-colors"
+            className="inline-flex items-center justify-center min-h-[44px] py-2 px-4 text-sm font-medium text-white bg-aubergine hover:bg-aubergine-hover rounded focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-aubergine disabled:opacity-50"
             data-testid="deal-approve-button"
           >
             {submitting === "approve" ? "Approving…" : "Approve this TermsVersion"}
