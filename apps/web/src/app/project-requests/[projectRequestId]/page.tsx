@@ -469,7 +469,7 @@ export default function ProjectRequestDetailPage({
                 href={
                   request.dealId !== null && request.dealId !== undefined
                     ? (`/deals/${request.dealId}` as Route)
-                    : ("/deals" as Route)
+                    : "/deals"
                 }
                 className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] px-6 py-3 text-sm font-medium text-white bg-aubergine hover:bg-aubergine-hover rounded focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-aubergine"
                 data-testid="project-request-open-deal-link"
