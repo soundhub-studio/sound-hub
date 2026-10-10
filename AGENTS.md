@@ -151,6 +151,38 @@ Expected local ports:
 - Preserve immutable terms, approvals, delivery versions, and audit evidence in later milestones.
 - Do not expose account identity, membership, wallet, embedding, or storage internals publicly.
 
+## Codex code review
+
+Review changes against the linked GitHub issue, repository specifications,
+and established SoundHub architecture.
+
+### Implementation slices
+
+Some tickets use tracked implementation slices.
+
+- Determine the declared current review scope before reporting missing work.
+- Do not report requirements explicitly assigned to later slices as blockers.
+- Report regressions to previously completed slices.
+- When the PR declares the ticket complete or reaches its final slice,
+  review the complete ticket acceptance criteria.
+
+### Findings
+
+Prioritize:
+1. correctness and broken user journeys
+2. authorization and Workspace isolation
+3. data integrity and transactional behavior
+4. API and DTO contract regressions
+5. accessibility and required responsive behavior
+6. missing tests for material behavior
+
+Do not block on:
+- stylistic preferences already enforced by tooling
+- speculative future architecture
+- work explicitly outside the current ticket scope
+
+Treat CI, tests, branch protections, and required approvals as separate hard gates.
+
 ## Current work
 
 Milestone 1 / BG1–BG7 are completed foundation and must remain regression-safe. Milestone 2 is the
