@@ -66,9 +66,18 @@ interface DealPageProps {
   // Next.js 15's `PageProps.params` is a Promise; await it in the
   // client component to keep the route type-compatible.
   readonly params: Promise<{ readonly dealId: string }>;
+  // M2 (#88) Codex finding (post 8d1ac3b): the
+  // /deals/[id]/approve-permission success redirect appends
+  // ?actingWorkspaceId= to the destination URL. The Deal
+  // page consumes this query param on mount so the human
+  // returns to the same acting Workspace they were just
+  // authorized against (no manual re-selection).
+  readonly searchParams: Promise<{
+    readonly [key: string]: string | string[] | undefined;
+  }>;
 }
 
-export default function DealPage({ params }: DealPageProps): JSX.Element {
+export default function DealPage({ params, searchParams }: DealPageProps): JSX.Element {
   const [resolvedDealId, setResolvedDealId] = useState<string>("");
   useEffect(() => {
     let cancelled = false;
@@ -79,6 +88,26 @@ export default function DealPage({ params }: DealPageProps): JSX.Element {
       cancelled = true;
     };
   }, [params]);
+  // M2 (#88) Codex finding (post 8d1ac3b): the
+  // /deals/[id]/approve-permission success redirect appends
+  // ?actingWorkspaceId= to the destination URL. The Deal page
+  // reads this on mount so the human returns to the same
+  // acting Workspace they were just authorized against.
+  const [preferredActingWorkspaceId, setPreferredActingWorkspaceId] = useState<string>("");
+  useEffect(() => {
+    let cancelled = false;
+    void searchParams.then((p) => {
+      if (cancelled) return;
+      const raw = p.actingWorkspaceId;
+      const value = Array.isArray(raw) ? raw[0] : raw;
+      if (typeof value === "string" && value.length > 0 && value.length <= 128) {
+        setPreferredActingWorkspaceId(value);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [searchParams]);
   const dealId = resolvedDealId;
   const { user, loading, refresh } = useSession();
   const [actingWorkspaceId, setActingWorkspaceId] = useState<string>("");
@@ -183,6 +212,8 @@ export default function DealPage({ params }: DealPageProps): JSX.Element {
       dealId,
       workspaceIds: user.workspaces.map((workspace) => workspace.workspaceId),
       fetchDeal,
+      preferredActingWorkspaceId:
+        preferredActingWorkspaceId !== "" ? preferredActingWorkspaceId : undefined,
     })
       .then((result) => {
         if (cancelled) return;

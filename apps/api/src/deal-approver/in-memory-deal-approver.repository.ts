@@ -149,8 +149,29 @@ export class InMemoryDealApproverRepository implements DealApproverRepository {
       // idempotencyKey) UNIQUE index on the persisted table is the
       // authoritative source of truth in production.
       if (existingAcceptanceRow !== null) {
+        // M2 (#88) Codex finding (post 8d1ac3b): same-key
+        // replay MUST revalidate current Workspace
+        // membership + status + the persisted row's
+        // (workspaceId, userId) tuple. A revoked member,
+        // suspended Workspace, or tuple-mismatched
+        // acceptance fails closed instead of returning a
+        // stale authorization.
+        const replayWorkspace = this.workspaces.get(input.actingWorkspaceId);
+        if (replayWorkspace === undefined || replayWorkspace.status !== "Active") {
+          return Promise.resolve({ ok: false, reason: "WORKSPACE_INELIGIBLE" });
+        }
+        const memberKey = this.membershipKey(input.userAccountId, input.actingWorkspaceId);
+        if (!this.memberships.has(memberKey)) {
+          return Promise.resolve({ ok: false, reason: "NOT_A_MEMBER" });
+        }
         const existing = this.dealApprovers.get(existingAcceptanceRow.dealApproverId);
         if (existing === undefined) {
+          return Promise.resolve({ ok: false, reason: "CONFLICT" });
+        }
+        if (
+          existing.workspaceId !== input.actingWorkspaceId ||
+          existing.userId !== input.userAccountId
+        ) {
           return Promise.resolve({ ok: false, reason: "CONFLICT" });
         }
         return Promise.resolve({

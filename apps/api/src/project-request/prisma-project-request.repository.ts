@@ -60,6 +60,7 @@ import type {
   CreateProjectRequestUseCaseTools,
   DecideFailureReason,
   DecideResult,
+  InitialTermsVersionDraft,
   PersistedDeal,
   PersistedProjectRequest,
   PersistedTermsVersion,
@@ -456,11 +457,38 @@ export class PrismaProjectRequestRepository implements ProjectRequestRepository 
     input: RespondProjectRequestTransactionInput,
     useCase: RespondProjectRequestUseCase,
   ): Promise<DecideResult<AcceptProjectRequestResult | PersistedProjectRequest>> {
+    // M2 (#88) Codex finding (post 8d1ac3b): memoize the AI
+    // draft thunk across bounded P2034 retries. The thunk is
+    // captured by the use case closure and invoked INSIDE the
+    // transaction; a mid-transaction P2034 failure (e.g., the
+    // serialization_failure on the TermsVersion insert) would
+    // otherwise cause the next retry attempt to invoke the
+    // adapter a SECOND time for the same logical accept. The
+    // cache collapses every retry attempt onto a single
+    // resolved Promise — the first call invokes the adapter,
+    // every subsequent call (within the same `respondToProjectRequestInTransaction`
+    // invocation) returns the same resolved value. The cache
+    // is reset for every new accept attempt, so different
+    // accepts do not share state.
+    let cachedDraftPromise: Promise<InitialTermsVersionDraft> | null = null;
+    const memoizedProducer: (() => Promise<InitialTermsVersionDraft>) | null =
+      input.produceInitialTermsVersionDraft === null
+        ? null
+        : () => {
+            if (cachedDraftPromise === null) {
+              cachedDraftPromise = input.produceInitialTermsVersionDraft!();
+            }
+            return cachedDraftPromise;
+          };
+    const memoizedInput: RespondProjectRequestTransactionInput = {
+      ...input,
+      produceInitialTermsVersionDraft: memoizedProducer,
+    };
     const envelope = await runWithBoundedP2034Retry<
       DecideResult<AcceptProjectRequestResult | PersistedProjectRequest>,
       DecideFailureReason
     >(
-      () => this.runRespondTransactionOnce(input, useCase),
+      () => this.runRespondTransactionOnce(memoizedInput, useCase),
       () => CONCURRENCY_RETRY_EXHAUSTED_RESPOND,
     );
     if (envelope.outcome.kind === "exhausted") {

@@ -389,11 +389,17 @@ export function buildApp(options: AppOptions = {}): BuiltApp {
   // and tests depend on.
   const projectRequestRepository =
     options.projectRequestRepository ?? new PrismaProjectRequestRepository(prisma);
+  // M2 (#88) Codex finding (post 8d1ac3b): the GET
+  // ProjectRequest command surfaces the allow-listed
+  // ProjectBrief content. The composition root owns the
+  // Prisma brief adapter; the ProjectRequest service is the
+  // only boundary the route and tests depend on.
   const projectRequestService =
     options.projectRequestService ??
     new ProjectRequestService({
       projectRequestRepository,
       workspaceAuthorizationService,
+      projectBriefRepository,
     });
 
   // M2 (#88): DealApprover JIT permission setup service. The

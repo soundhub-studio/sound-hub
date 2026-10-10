@@ -138,6 +138,67 @@ test("provisionDealApprover same-key retry converges on the existing row", async
   assert.equal(first.dealApprover.dealApproverId, second.dealApprover.dealApproverId);
 });
 
+test("provisionDealApprover same-key retry after membership revoked fails closed (DEAL_APPROVER_FORBIDDEN)", async () => {
+  // M2 (#88) Codex finding (post 8d1ac3b): same-key replay
+  // MUST revalidate current Workspace membership + status +
+  // the persisted row's (workspaceId, userId) tuple. A
+  // revoked member cannot recover a stale authorization by
+  // replaying the original idempotencyKey.
+  const { service, repo: dealApproverRepository } = buildFixture();
+  await service.provisionDealApprover({
+    userAccountId: ACTING_USER_ID,
+    actingWorkspaceId: PERSONAL_WORKSPACE_ID,
+    confirmationVersion: "m2-deal-approver-v1",
+    idempotencyKey: IDEMPOTENCY_KEY,
+    requestId: REQUEST_ID,
+  });
+  // Revoke the human's membership between provisioning and
+  // same-key replay.
+  dealApproverRepository.removeMembership(ACTING_USER_ID, PERSONAL_WORKSPACE_ID);
+  await assert.rejects(
+    service.provisionDealApprover({
+      userAccountId: ACTING_USER_ID,
+      actingWorkspaceId: PERSONAL_WORKSPACE_ID,
+      confirmationVersion: "m2-deal-approver-v1",
+      idempotencyKey: IDEMPOTENCY_KEY,
+      requestId: REQUEST_ID,
+    }),
+    (err: unknown) => err instanceof DealApproverError && err.code === "DEAL_APPROVER_FORBIDDEN",
+  );
+});
+
+test("provisionDealApprover same-key retry after Workspace suspended fails closed (DEAL_APPROVER_FORBIDDEN)", async () => {
+  // M2 (#88) Codex finding (post 8d1ac3b): same-key replay
+  // must also revalidate Workspace status. A Suspended
+  // Workspace cannot replay a previously-provisioned
+  // authorization.
+  const { service, repo: dealApproverRepository } = buildFixture();
+  await service.provisionDealApprover({
+    userAccountId: ACTING_USER_ID,
+    actingWorkspaceId: PERSONAL_WORKSPACE_ID,
+    confirmationVersion: "m2-deal-approver-v1",
+    idempotencyKey: IDEMPOTENCY_KEY,
+    requestId: REQUEST_ID,
+  });
+  // Find the seeded Workspace and flip its status to Suspended.
+  const ws = (
+    dealApproverRepository as unknown as {
+      workspaces: Map<string, { workspaceId: string; status: "Active" | "Suspended" }>;
+    }
+  ).workspaces.get(PERSONAL_WORKSPACE_ID);
+  if (ws !== undefined) ws.status = "Suspended";
+  await assert.rejects(
+    service.provisionDealApprover({
+      userAccountId: ACTING_USER_ID,
+      actingWorkspaceId: PERSONAL_WORKSPACE_ID,
+      confirmationVersion: "m2-deal-approver-v1",
+      idempotencyKey: IDEMPOTENCY_KEY,
+      requestId: REQUEST_ID,
+    }),
+    (err: unknown) => err instanceof DealApproverError && err.code === "DEAL_APPROVER_FORBIDDEN",
+  );
+});
+
 test("provisionDealApprover different-key retry against an already-provisioned tuple surfaces ALREADY_PROVISIONED", async () => {
   const { service } = buildFixture();
   await service.provisionDealApprover({

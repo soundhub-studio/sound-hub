@@ -31,7 +31,10 @@ import type {
   Bg5TermsVersionPublicV1,
 } from "@soundhub/types";
 import { bg5ProposedTermsV1Schema } from "@soundhub/types";
-import type { PersistedBrief } from "../matchmaker/project-brief.repository.js";
+import type {
+  PersistedBrief,
+  ProjectBriefRepository,
+} from "../matchmaker/project-brief.repository.js";
 import {
   AuthorizationError,
   type WorkspaceAuthorizationService,
@@ -87,6 +90,17 @@ export class ProjectRequestError extends Error {
 
 export interface ProjectRequestServiceDeps {
   readonly projectRequestRepository: ProjectRequestRepository;
+  /**
+   * M2 (#88) Codex finding (post 8d1ac3b): the GET
+   * ProjectRequest command surfaces the allow-listed
+   * ProjectBrief content (originalText + required /
+   * preferred criteria) so the detail page renders the
+   * buyer's real constraints instead of a generic
+   * placeholder. The service looks up the brief by id via
+   * this repository; null when omitted (fail-closed on the
+   * public envelope). Tests pass the in-memory adapter.
+   */
+  readonly projectBriefRepository?: ProjectBriefRepository;
   /**
    * Used by the read commands (getProjectRequest /
    * listProjectRequests) to revalidate that the authenticated
@@ -147,11 +161,19 @@ export class ProjectRequestService {
   private readonly repository: ProjectRequestRepository;
   private readonly authz: WorkspaceAuthorizationService;
   private readonly termsDraftAiAdapter: DealTermsAiAdapter;
+  // M2 (#88) Codex finding (post 8d1ac3b): optional
+  // ProjectBriefRepository. When omitted, the GET command
+  // surfaces `brief: null` (fail-closed). When wired, the
+  // service loads the allow-listed ProjectBrief content
+  // (originalText + required / preferred criteria) for
+  // ProjectRequest detail rendering.
+  private readonly projectBriefRepository: ProjectBriefRepository | null;
   private readonly now: () => Date;
 
   constructor(deps: ProjectRequestServiceDeps) {
     this.repository = deps.projectRequestRepository;
     this.authz = deps.workspaceAuthorizationService;
+    this.projectBriefRepository = deps.projectBriefRepository ?? null;
     this.termsDraftAiAdapter = deps.termsDraftAiAdapter ?? new DeterministicDealTermsAiAdapter();
     this.now = deps.now ?? (() => new Date());
   }
@@ -292,7 +314,7 @@ export class ProjectRequestService {
     }
     const accepted = result.value as AcceptProjectRequestResult;
     return {
-      projectRequest: toPublicProjectRequest(accepted.projectRequest),
+      projectRequest: toPublicProjectRequest(accepted.projectRequest, null, accepted.deal.id),
       deal: toPublicDeal(accepted.deal),
       initialTermsVersion: toPublicInitialTermsVersion(accepted.initialTermsVersion, true),
     };
@@ -313,6 +335,49 @@ export class ProjectRequestService {
    * is keyed by the application boundary, not by the persisted
    * Deal id (which does not exist yet at this point).
    */
+
+  /**
+   * M2 (#88) Codex finding (post 8d1ac3b): load the
+   * allow-listed ProjectBrief content (originalText +
+   * structured required / preferred criteria) and project it
+   * onto the public ProjectRequest DTO. Fail-closed (`null`)
+   * when the repository is not wired OR the row is absent OR
+   * the load throws — the page renders the explicit "brief
+   * content unavailable" copy when the read fails.
+   *
+   * The caller's authority is already enforced by
+   * `requireActingMembership` + the buyer/seller party check
+   * above; the brief is itself a public per the M1 Matchmaker
+   * contract (the buyer's request to a seller surfaces the
+   * buyer's own text + criteria), so loading it does not leak
+   * identity.
+   */
+  private async loadProjectBriefForPublic(
+    projectBriefId: string,
+  ): Promise<ProjectRequestPublicV1["brief"]> {
+    if (this.projectBriefRepository === null) return null;
+    try {
+      const row = await this.projectBriefRepository.findBriefById(projectBriefId);
+      if (row === null) return null;
+      const requiredCriteria =
+        row.criteria.required === undefined ? undefined : row.criteria.required;
+      const preferredCriteria =
+        row.criteria.preferred === undefined
+          ? undefined
+          : {
+              categoryKeys: row.criteria.preferred.categoryKeys ?? [],
+              serviceModes: row.criteria.preferred.serviceModes ?? [],
+            };
+      return {
+        originalText: row.briefText,
+        ...(requiredCriteria !== undefined ? { requiredCriteria } : {}),
+        ...(preferredCriteria !== undefined ? { preferredCriteria } : {}),
+      };
+    } catch {
+      return null;
+    }
+  }
+
   private async produceInitialTermsVersionDraft(
     input: AcceptProjectRequestInput,
     prRow: {
@@ -472,7 +537,19 @@ export class ProjectRequestService {
     ) {
       throw new ProjectRequestError("ProjectRequest not found.", "PROJECT_REQUEST_NOT_FOUND");
     }
-    return { projectRequest: toPublicProjectRequest(existing) };
+    // M2 (#88) Codex finding (post 8d1ac3b): surface the
+    // allow-listed ProjectBrief content (originalText +
+    // required / preferred criteria) so the ProjectRequest
+    // detail page renders the buyer's real constraints
+    // instead of a generic placeholder. The lookup is
+    // fail-closed: null when the repository is not wired
+    // OR the row is absent. The (buyerWorkspaceId,
+    // actingWorkspaceId) authority is already enforced
+    // above; a cross-Workspace brief read would not leak
+    // identity (brief.briefText is public per the M1
+    // Matchmaker contract).
+    const brief = await this.loadProjectBriefForPublic(existing.projectBriefId);
+    return { projectRequest: toPublicProjectRequest(existing, brief) };
   }
 
   /**
@@ -508,7 +585,7 @@ export class ProjectRequestService {
       ...(input.statusFilter ? { statusFilter: input.statusFilter } : {}),
     });
     return {
-      projectRequests: rows.map(toPublicProjectRequest),
+      projectRequests: rows.map((row) => toPublicProjectRequest(row)),
     };
   }
 
@@ -643,7 +720,11 @@ function evaluateCreateUseCase(
 
 // ---------- DTO mapping ----------
 
-export function toPublicProjectRequest(persisted: PersistedProjectRequest): ProjectRequestPublicV1 {
+export function toPublicProjectRequest(
+  persisted: PersistedProjectRequest,
+  brief: ProjectRequestPublicV1["brief"] = null,
+  dealId: ProjectRequestPublicV1["dealId"] = null,
+): ProjectRequestPublicV1 {
   // Private human-actor identifiers are intentionally omitted from
   // the counterparty-visible surface. The persisted columns remain
   // in PostgreSQL as audit evidence (and are available to internal
@@ -658,12 +739,26 @@ export function toPublicProjectRequest(persisted: PersistedProjectRequest): Proj
   // fields are populated by the repository's read paths; the
   // transactional create / accept / decline paths leave them null
   // because the UI immediately re-lists and re-renders.
+  //
+  // M2 (#88) Codex finding (post 8d1ac3b): the optional
+  // `brief` sub-object carries the allow-listed ProjectBrief
+  // content (originalText + structured required / preferred
+  // criteria) so the ProjectRequest detail page renders the
+  // buyer's real constraints instead of a generic placeholder.
+  // The shape mirrors the BG3 Matchmaker criteria schema; the
+  // caller passes `null` (default) when the brief is absent or
+  // the lookup is fail-closed.
   return {
     projectRequestId: persisted.id,
     buyerWorkspaceId: persisted.buyerWorkspaceId,
     sellerWorkspaceId: persisted.sellerWorkspaceId,
     serviceOfferingId: persisted.serviceOfferingId,
     projectBriefId: persisted.projectBriefId,
+    // M2 (#88) Codex finding (post 8d1ac3b): the Accepted
+    // ProjectRequest carries the created Deal id so the detail
+    // page can route the human to /deals/:dealId. Null when
+    // Pending or Declined.
+    dealId,
     status: persisted.status,
     sellerDecisionAt: persisted.sellerDecisionAt ? persisted.sellerDecisionAt.toISOString() : null,
     sellerConsentAt: persisted.sellerConsentAt ? persisted.sellerConsentAt.toISOString() : null,
@@ -672,6 +767,7 @@ export function toPublicProjectRequest(persisted: PersistedProjectRequest): Proj
     sellerWorkspaceName: persisted.sellerWorkspaceName,
     serviceOfferingTitle: persisted.serviceOfferingTitle,
     briefExcerpt: persisted.briefExcerpt,
+    brief,
   };
 }
 

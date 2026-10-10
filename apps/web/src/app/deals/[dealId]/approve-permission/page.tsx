@@ -21,6 +21,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import type { Route } from "next";
 import { useRouter } from "next/navigation";
 import { useSession } from "../../../components/SessionProvider";
 import { Card } from "../../../components/ui/Card";
@@ -177,11 +178,16 @@ export default function ApprovePermissionPage({
         idempotencyKey: idempotencyKeyRef.current,
       });
       setSuccess(true);
-      // Return to the pending Deal page. The Approve action is a
-      // separate explicit step the human must take after setup.
-      // No auto-replay, no DealApproval created during setup.
+      // Return to the pending Deal page with the acting
+      // Workspace preserved. The Deal page reads this query
+      // param on mount to revalidate the same Workspace the
+      // human was just authorized against. No auto-replay, no
+      // DealApproval created during setup.
+      const target = new URL(`/deals/${dealId}`, window.location.origin);
+      target.searchParams.set("actingWorkspaceId", actingWorkspaceId);
+      const targetUrl = `${target.pathname}${target.search}`;
       window.setTimeout(() => {
-        router.push(`/deals/${dealId}`);
+        router.push(targetUrl as Route);
       }, 600);
     } catch (err) {
       if (
@@ -199,8 +205,10 @@ export default function ApprovePermissionPage({
         // dashboard readiness task). Return to the Deal page
         // without surfacing an error.
         setSuccess(true);
+        const target = new URL(`/deals/${dealId}`, window.location.origin);
+        target.searchParams.set("actingWorkspaceId", actingWorkspaceId);
         window.setTimeout(() => {
-          router.push(`/deals/${dealId}`);
+          router.push(`${target.pathname}${target.search}` as Route);
         }, 600);
       } else {
         setError(err instanceof Error ? err.message : "Could not set up permission.");

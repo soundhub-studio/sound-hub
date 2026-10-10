@@ -20,6 +20,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import type { Route } from "next";
 import type { ProjectRequestPublicV1 } from "@soundhub/types";
 import { useSession } from "../../components/SessionProvider";
 import { Card } from "../../components/ui/Card";
@@ -289,7 +290,17 @@ export default function ProjectRequestDetailPage({
   const buyerLabel = request.buyerWorkspaceName ?? "Buyer Workspace";
   const sellerLabel = request.sellerWorkspaceName ?? "Seller Workspace";
   const offeringLabel = request.serviceOfferingTitle ?? "ServiceOffering";
-  const briefExcerpt = request.briefExcerpt ?? "Brief content unavailable.";
+  // M2 (#88) Codex finding (post 8d1ac3b): render the actual
+  // allow-listed ProjectBrief content (originalText +
+  // structured required / preferred criteria) from the
+  // public DTO. Falls back to the bounded `briefExcerpt`
+  // when the brief lookup is fail-closed (the page never
+  // shows a generic placeholder when the data is available).
+  const brief = request.brief ?? null;
+  const briefOriginalText =
+    brief?.originalText ?? request.briefExcerpt ?? "Brief content unavailable.";
+  const briefRequired = brief?.requiredCriteria;
+  const briefPreferred = brief?.preferredCriteria;
   const canDecide = request.status === "Pending" && isSellerSide && submitting === null;
 
   return (
@@ -389,27 +400,104 @@ export default function ProjectRequestDetailPage({
         </Card.Header>
         <Card.Content>
           <p className="text-sm text-gray-900 break-words" data-testid="project-request-brief">
-            {briefExcerpt}
+            {briefOriginalText}
           </p>
-          <p className="mt-2 text-xs text-gray-500" data-testid="project-request-constraints">
-            The buyer's required constraints (e.g. service mode, ServiceCategory) are enforced at
-            the Matchmaker boundary; see the seller's matchmaker record for the full set.
-          </p>
+          {briefRequired !== undefined && (
+            <div className="mt-3" data-testid="project-request-constraints">
+              <p className="text-xs font-medium text-gray-500 uppercase">Required constraints</p>
+              <ul className="mt-1 list-disc pl-5 text-sm text-gray-700">
+                {briefRequired.primaryCategoryKeys !== undefined &&
+                  briefRequired.primaryCategoryKeys.length > 0 && (
+                    <li data-testid="project-request-constraint-categories">
+                      Primary categories: {briefRequired.primaryCategoryKeys.join(", ")}
+                    </li>
+                  )}
+                {briefRequired.serviceModes !== undefined &&
+                  briefRequired.serviceModes.length > 0 && (
+                    <li data-testid="project-request-constraint-modes">
+                      Service modes: {briefRequired.serviceModes.join(", ")}
+                    </li>
+                  )}
+                {briefRequired.basedIn !== undefined && (
+                  <li data-testid="project-request-constraint-based-in">
+                    Based in: {briefRequired.basedIn.countryCode ?? "(no country)"}
+                  </li>
+                )}
+                {briefRequired.serviceArea !== undefined && (
+                  <li data-testid="project-request-constraint-service-area">
+                    Service area: {briefRequired.serviceArea.countryCode}
+                  </li>
+                )}
+              </ul>
+            </div>
+          )}
+          {briefPreferred !== undefined && (
+            <div className="mt-3" data-testid="project-request-preferences">
+              <p className="text-xs font-medium text-gray-500 uppercase">Preferred criteria</p>
+              <ul className="mt-1 list-disc pl-5 text-sm text-gray-700">
+                {briefPreferred.categoryKeys !== undefined &&
+                  briefPreferred.categoryKeys.length > 0 && (
+                    <li>Categories: {briefPreferred.categoryKeys.join(", ")}</li>
+                  )}
+                {briefPreferred.serviceModes !== undefined &&
+                  briefPreferred.serviceModes.length > 0 && (
+                    <li>Service modes: {briefPreferred.serviceModes.join(", ")}</li>
+                  )}
+              </ul>
+            </div>
+          )}
         </Card.Content>
       </Card>
 
-      <Card data-testid="project-request-no-deal-card">
-        <Card.Header>
-          <Card.Title>No Deal, approval, funding, or work yet</Card.Title>
-        </Card.Header>
-        <Card.Content>
-          <p className="text-sm text-gray-700">
-            No Deal has been created from this ProjectRequest. No TermsVersion has been approved. No
-            funding has been initiated. No work has begun. The seller's Accept/Decline below is the
-            only command that changes this state.
-          </p>
-        </Card.Content>
-      </Card>
+      {request.status === "Accepted" ? (
+        <Card data-testid="project-request-accepted-card">
+          <Card.Header>
+            <Card.Title>Accepted — open the Negotiating Deal</Card.Title>
+            <Card.Description>
+              The seller accepted this ProjectRequest. A single Negotiating Deal and one AI-drafted,
+              unapproved current TermsVersion were created atomically.
+            </Card.Description>
+          </Card.Header>
+          <Card.Content>
+            <p className="text-sm text-gray-700" data-testid="project-request-accepted-state">
+              Each side must independently approve the current TermsVersion from the Deal page
+              before funding can begin. No DealApproval was created at accept time — the Approve
+              action is a separate explicit step.
+            </p>
+            <div className="mt-3">
+              <Link
+                href={
+                  request.dealId !== null && request.dealId !== undefined
+                    ? (`/deals/${request.dealId}` as Route)
+                    : ("/deals" as Route)
+                }
+                className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] px-6 py-3 text-sm font-medium text-white bg-aubergine hover:bg-aubergine-hover rounded focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-aubergine"
+                data-testid="project-request-open-deal-link"
+              >
+                Open the Deal
+              </Link>
+            </div>
+            {request.dealId !== null && request.dealId !== undefined && (
+              <p className="mt-2 text-xs text-gray-500" data-testid="project-request-deal-id-hint">
+                Deal id: <code>{request.dealId}</code>
+              </p>
+            )}
+          </Card.Content>
+        </Card>
+      ) : (
+        <Card data-testid="project-request-no-deal-card">
+          <Card.Header>
+            <Card.Title>No Deal, approval, funding, or work yet</Card.Title>
+          </Card.Header>
+          <Card.Content>
+            <p className="text-sm text-gray-700">
+              No Deal has been created from this ProjectRequest. No TermsVersion has been approved.
+              No funding has been initiated. No work has begun. The seller's Accept/Decline below is
+              the only command that changes this state.
+            </p>
+          </Card.Content>
+        </Card>
+      )}
 
       {error && (
         <p className="text-sm text-red-700" data-testid="project-request-error">

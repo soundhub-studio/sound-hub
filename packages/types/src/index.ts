@@ -2641,6 +2641,12 @@ export const projectRequestPublicV1Schema = z
     sellerWorkspaceId: z.string().min(1).max(128),
     serviceOfferingId: z.string().min(1).max(128),
     projectBriefId: z.string().min(1).max(128),
+    // M2 (#88) Codex finding (post 8d1ac3b): the Accepted
+    // ProjectRequest carries the Deal id the seller
+    // acceptance created so the detail page can route the
+    // human straight to /deals/:dealId. Null when the request
+    // has not been Accepted (Pending / Declined).
+    dealId: z.string().min(1).max(128).nullable().optional(),
     status: z.enum(projectRequestStatusValuesV1),
     sellerDecisionAt: z.string().datetime().nullable(),
     sellerConsentAt: z.string().datetime().nullable(),
@@ -2654,6 +2660,32 @@ export const projectRequestPublicV1Schema = z
     sellerWorkspaceName: z.string().min(1).max(200).nullable(),
     serviceOfferingTitle: z.string().min(1).max(200).nullable(),
     briefExcerpt: z.string().max(280).nullable(),
+    // M2 (#88) Codex finding (post 8d1ac3b): surface the
+    // actual allow-listed ProjectBrief content (originalText +
+    // required / preferred criteria) so the ProjectRequest
+    // detail page renders the buyer's real constraints instead
+    // of a generic placeholder. The shape mirrors the BG3
+    // Matchmaker criteria schema; null when the row is absent
+    // or fail-closed on the read path.
+    brief: z
+      .object({
+        originalText: z.string().min(1).max(2000),
+        requiredCriteria: talentSearchRequiredCriteriaV1Schema.optional(),
+        preferredCriteria: z
+          .object({
+            categoryKeys: optionalBoundedStringArray(1, 64, "categoryKeys"),
+            serviceModes: z
+              .array(serviceModeSchema)
+              .max(8)
+              .transform((arr) => (arr.length === 0 ? undefined : arr))
+              .optional(),
+          })
+          .strict()
+          .optional(),
+      })
+      .strict()
+      .nullable()
+      .optional(),
   })
   .strict();
 export type ProjectRequestPublicV1 = z.infer<typeof projectRequestPublicV1Schema>;

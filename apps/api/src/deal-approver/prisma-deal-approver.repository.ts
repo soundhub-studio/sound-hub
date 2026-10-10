@@ -210,10 +210,47 @@ export class PrismaDealApproverRepository implements DealApproverRepository {
           const existingAcceptance = existingAcceptanceRows[0] ?? null;
 
           if (existingAcceptance !== null) {
+            // M2 (#88) Codex finding (post 8d1ac3b): same-key
+            // replay MUST revalidate current Workspace
+            // membership + status + the persisted row's
+            // (workspaceId, userId) tuple. A revoked member,
+            // suspended Workspace, or tuple-mismatched
+            // acceptance fails closed instead of returning a
+            // stale authorization.
+            //
+            // Re-verify the Workspace is Active.
+            const workspaceStatusRows = await tx.$queryRaw<
+              { readonly status: "Active" | "Suspended" }[]
+            >`SELECT status FROM workspaces WHERE id = ${input.actingWorkspaceId} FOR UPDATE`;
+            if (workspaceStatusRows.length === 0 || workspaceStatusRows[0]?.status !== "Active") {
+              return { ok: false as const, reason: "WORKSPACE_INELIGIBLE" as const };
+            }
+            // Re-verify current membership for the EXACT
+            // (userId, workspaceId) tuple.
+            const membershipRows = await tx.$queryRaw<{ readonly id: string }[]>`
+              SELECT id FROM workspace_memberships
+              WHERE "userId" = ${input.userAccountId}
+                AND "workspaceId" = ${input.actingWorkspaceId}
+              FOR UPDATE`;
+            if (membershipRows.length === 0) {
+              return { ok: false as const, reason: "NOT_A_MEMBER" as const };
+            }
+            // Look up the persisted `DealApprover` row and
+            // verify its (workspaceId, userId) tuple still
+            // matches the current command — defends against a
+            // historic write that was created under a different
+            // tuple (e.g. the user re-keyed the idempotencyKey
+            // path while the database was migrated).
             const existingDa = await tx.dealApprover.findUnique({
               where: { id: existingAcceptance.dealApproverId },
             });
             if (existingDa === null) {
+              return { ok: false as const, reason: "CONFLICT" as const };
+            }
+            if (
+              existingDa.workspaceId !== input.actingWorkspaceId ||
+              existingDa.userId !== input.userAccountId
+            ) {
               return { ok: false as const, reason: "CONFLICT" as const };
             }
             return {
@@ -227,7 +264,7 @@ export class PrismaDealApproverRepository implements DealApproverRepository {
                   userId: input.userAccountId,
                   grantedByUserId: input.userAccountId,
                   confirmationVersion: existingAcceptance.confirmationVersion,
-                  acceptedAt: new Date(),
+                  acceptedAt: existingDa.grantedAt,
                   idempotencyKey: input.idempotencyKey,
                   requestId: input.requestId,
                 },

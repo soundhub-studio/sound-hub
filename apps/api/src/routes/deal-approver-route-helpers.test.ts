@@ -201,6 +201,28 @@ test("POST /api/deal-approvers rejects a missing confirmationVersion with 400 DE
   });
 });
 
+test("POST /api/deal-approvers rejects an explicit null confirmationVersion with 400 DEAL_APPROVER_INVALID (not 422)", async () => {
+  // M2 (#88) Codex finding (post 8d1ac3b): only a PRESENT
+  // noncanonical `confirmationVersion` maps to the 422 envelope.
+  // An explicit null (or other non-string value) is a malformed
+  // body and stays 400.
+  const { app } = buildApp();
+  await withServer(app, async (port) => {
+    const result = await postProvisioning(
+      port,
+      {
+        actingWorkspaceId: PERSONAL_WORKSPACE_ID,
+        confirmationVersion: null,
+        idempotencyKey: "11111111-1111-1111-1111-111111111111",
+      },
+      "soundhub_session=session-acting",
+    );
+    assert.equal(result.status, 400);
+    const body = result.body as { error: { code: string } };
+    assert.equal(body.error.code, "DEAL_APPROVER_INVALID");
+  });
+});
+
 test("POST /api/deal-approvers rejects a non-member with DEAL_APPROVER_FORBIDDEN", async () => {
   const { app } = buildApp({ withSession: false });
   await withServer(app, async (port) => {

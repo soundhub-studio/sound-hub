@@ -92,19 +92,26 @@ export function validateDealApproverBody<T>(
   const parsed = schema.safeParse(raw);
   if (!parsed.success) {
     const zodError = parsed.error as ZodError;
-    // M2 (#88) Codex finding: a stale or unknown
-    // `confirmationVersion` is a typed 422
+    // M2 (#88) Codex finding (post 8d1ac3b): a stale or
+    // unknown `confirmationVersion` is a typed 422
     // (`DEAL_APPROVER_CONFIRMATION_VERSION_MISMATCH`), NOT a
     // generic 400. Clients must be able to distinguish an
     // outdated attestation from a malformed request so the
     // customer can re-read the current version. The application
     // boundary keeps the closed canonical version in one place
-    // (the shared Zod `literal(...)`); a non-literal value is
-    // the only reason the Zod path emits a typed mismatch here.
+    // (the shared Zod `literal(...)`). A PRESENT but noncanonical
+    // value → 422; a MISSING / non-string field stays 400.
+    const rawRecord =
+      raw !== null && typeof raw === "object" && !Array.isArray(raw)
+        ? (raw as Record<string, unknown>)
+        : null;
+    const confirmationVersionRaw = rawRecord?.["confirmationVersion"];
+    const confirmationVersionPresent =
+      typeof confirmationVersionRaw === "string" && confirmationVersionRaw.length > 0;
     const confirmationVersionIssue = zodError.issues.find(
       (issue) => issue.path[0] === "confirmationVersion",
     );
-    if (confirmationVersionIssue !== undefined) {
+    if (confirmationVersionIssue !== undefined && confirmationVersionPresent) {
       writeSafeError(
         res,
         buildSafeError(
