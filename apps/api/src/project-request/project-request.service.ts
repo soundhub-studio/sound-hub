@@ -26,12 +26,21 @@ import type {
   CreateProjectRequestRequestV1,
   ProjectRequestPublicV1,
   DealPublicV1,
+  DealTermsAiDraftInputV1,
+  DealTermsAiDraftOutputV1,
+  Bg5TermsVersionPublicV1,
 } from "@soundhub/types";
-import type { PersistedBrief } from "../matchmaker/project-brief.repository.js";
+import { bg5ProposedTermsV1Schema } from "@soundhub/types";
+import type {
+  PersistedBrief,
+  ProjectBriefRepository,
+} from "../matchmaker/project-brief.repository.js";
 import {
   AuthorizationError,
   type WorkspaceAuthorizationService,
 } from "../services/workspace-authorization.service.js";
+import type { DealTermsAiAdapter } from "../deal-terms/deal-terms-ai-adapter.js";
+import { DeterministicDealTermsAiAdapter } from "../deal-terms/deal-terms-ai-adapter.js";
 import type {
   AcceptProjectRequestResult,
   CreateProjectRequestFailureReason,
@@ -42,8 +51,10 @@ import type {
   CreateUseCaseOutcome,
   DecideFailureReason,
   DecideResult,
+  InitialTermsVersionDraft,
   PersistedDeal,
   PersistedProjectRequest,
+  PersistedTermsVersion,
   ProjectRequestRepository,
   RespondProjectRequestUseCase,
   RespondProjectRequestUseCaseContext,
@@ -69,7 +80,8 @@ export class ProjectRequestError extends Error {
       | "PROJECT_REQUEST_FORBIDDEN"
       | "PROJECT_REQUEST_ALREADY_PENDING"
       | "PROJECT_REQUEST_ALREADY_RESPONDED"
-      | "PROJECT_REQUEST_UNAVAILABLE",
+      | "PROJECT_REQUEST_UNAVAILABLE"
+      | "PROJECT_REQUEST_TERMS_DRAFT_INVALID",
   ) {
     super(message);
     this.name = "ProjectRequestError";
@@ -79,6 +91,17 @@ export class ProjectRequestError extends Error {
 export interface ProjectRequestServiceDeps {
   readonly projectRequestRepository: ProjectRequestRepository;
   /**
+   * M2 (#88) Codex finding (post 8d1ac3b): the GET
+   * ProjectRequest command surfaces the allow-listed
+   * ProjectBrief content (originalText + required /
+   * preferred criteria) so the detail page renders the
+   * buyer's real constraints instead of a generic
+   * placeholder. The service looks up the brief by id via
+   * this repository; null when omitted (fail-closed on the
+   * public envelope). Tests pass the in-memory adapter.
+   */
+  readonly projectBriefRepository?: ProjectBriefRepository;
+  /**
    * Used by the read commands (getProjectRequest /
    * listProjectRequests) to revalidate that the authenticated
    * UserAccount holds a current WorkspaceMembership in the
@@ -87,6 +110,16 @@ export interface ProjectRequestServiceDeps {
    * the repository never inspects WorkspaceMembership.
    */
   readonly workspaceAuthorizationService: WorkspaceAuthorizationService;
+  /**
+   * M2 (#88): AI adapter that produces the initial TermsVersion
+   * candidate on accept. Defaults to the deterministic fallback
+   * adapter so the buildathon journey stays reproducible without a
+   * managed provider. The service validates the candidate against
+   * the strict `bg5ProposedTermsV1Schema` before persisting; a
+   * malformed candidate collapses to a typed `PROJECT_REQUEST_TERMS_DRAFT_INVALID`
+   * rejection (no Deal is created in that case).
+   */
+  readonly termsDraftAiAdapter?: DealTermsAiAdapter;
   /**
    * Optional clock injection for tests. Defaults to `new Date()`.
    */
@@ -127,11 +160,21 @@ export interface ListProjectRequestsInput {
 export class ProjectRequestService {
   private readonly repository: ProjectRequestRepository;
   private readonly authz: WorkspaceAuthorizationService;
+  private readonly termsDraftAiAdapter: DealTermsAiAdapter;
+  // M2 (#88) Codex finding (post 8d1ac3b): optional
+  // ProjectBriefRepository. When omitted, the GET command
+  // surfaces `brief: null` (fail-closed). When wired, the
+  // service loads the allow-listed ProjectBrief content
+  // (originalText + required / preferred criteria) for
+  // ProjectRequest detail rendering.
+  private readonly projectBriefRepository: ProjectBriefRepository | null;
   private readonly now: () => Date;
 
   constructor(deps: ProjectRequestServiceDeps) {
     this.repository = deps.projectRequestRepository;
     this.authz = deps.workspaceAuthorizationService;
+    this.projectBriefRepository = deps.projectBriefRepository ?? null;
+    this.termsDraftAiAdapter = deps.termsDraftAiAdapter ?? new DeterministicDealTermsAiAdapter();
     this.now = deps.now ?? (() => new Date());
   }
 
@@ -175,14 +218,60 @@ export class ProjectRequestService {
 
   /**
    * Accept a Pending ProjectRequest as the seller. Atomically
-   * transitions Pending → Accepted AND creates exactly one
-   * Negotiating Deal (ticket #62 acceptance criteria + GS 18 +
-   * GS 26).
+   * transitions Pending → Accepted, creates exactly one Negotiating
+   * Deal, AND creates exactly one AI-drafted, unapproved current
+   * TermsVersion (ticket #88 acceptance criteria + GS 18 + GS 26).
+   *
+   * M2 (#88) Codex finding: the AI candidate is produced INSIDE
+   * the transaction via a deferred thunk the use case closure
+   * captures. The repository invokes the thunk AFTER the
+   * guarded Pending → Accepted update + Deal insert succeed
+   * and BEFORE the TermsVersion insert. The adapter is
+   * therefore NOT invoked for unauthorized / already-responded /
+   * losing-concurrent attempts, and concurrent accepts share the
+   * same retry-safe adapter call only on the winning path. A
+   * strict-validation failure on the winning path throws and the
+   * surrounding `$transaction` rolls back, leaving no Deal +
+   * no TermsVersion rows behind. The (deals.projectRequestId) +
+   * (termsVersions.dealId, version) UNIQUE indexes are the
+   * durable convergence keys for same-attempt retry. The
+   * transaction does NOT approve the TermsVersion (per the M2
+   * authority invariants: ProjectRequest acceptance is not
+   * TermsVersion approval).
    */
   async acceptProjectRequest(input: AcceptProjectRequestInput): Promise<{
     readonly projectRequest: ProjectRequestPublicV1;
     readonly deal: DealPublicV1;
+    readonly initialTermsVersion: Bg5TermsVersionPublicV1;
   }> {
+    // Step 1: look up the ProjectRequest so we can pass real
+    // buyer / seller / ServiceOffering ids to the AI adapter. If
+    // the lookup fails (rare: the row was deleted between the
+    // create call and this accept), we fall back to placeholder
+    // ids derived from the input + projectRequestId so the adapter
+    // receives a well-formed input shape regardless of lookup
+    // fidelity. The strict-validation of the candidate guarantees
+    // the persisted row matches the contract regardless.
+    const prRow = await this.repository.findProjectRequestById(input.projectRequestId);
+    const aiContext = prRow ?? {
+      id: input.projectRequestId,
+      buyerWorkspaceId: `pending-${input.projectRequestId}`,
+      sellerWorkspaceId: input.actingWorkspaceId,
+      serviceOfferingId: `pending-${input.projectRequestId}`,
+      projectBriefId: `pending-${input.projectRequestId}`,
+    };
+
+    // Step 2: build the deferred AI draft producer. The thunk
+    // is captured by the use case closure and invoked by the
+    // repository ONLY when the use case decides to accept.
+    // Concurrent losing accepts therefore never invoke the
+    // adapter; unauthorized attempts never invoke the adapter;
+    // already-responded attempts never invoke the adapter.
+    const produceInitialTermsVersionDraft = async (): Promise<InitialTermsVersionDraft> => {
+      return this.produceInitialTermsVersionDraft(input, aiContext);
+    };
+
+    // Step 3: open one transaction via the use-case closure.
     const useCase: RespondProjectRequestUseCase = (
       ctx: RespondProjectRequestUseCaseContext,
       tools: RespondProjectRequestUseCaseTools,
@@ -195,6 +284,18 @@ export class ProjectRequestService {
         projectRequestId: ctx.projectRequest.id,
         sellerDecisionByUserId: input.userAccountId,
         now: this.now(),
+        // M2 (#88) Codex finding: the AI draft is a thunk
+        // captured from the use-case context. The repository
+        // invokes it INSIDE the transaction, AFTER the guarded
+        // transition + Deal insert succeed, and BEFORE the
+        // TermsVersion insert. A strict-validation failure
+        // throws and rolls back the transaction.
+        produceInitialTermsVersionDraft:
+          ctx.produceInitialTermsVersionDraft ??
+          (() =>
+            Promise.reject(
+              new Error("Internal error: repository did not provide an AI draft producer."),
+            )),
       });
     };
 
@@ -204,6 +305,7 @@ export class ProjectRequestService {
         actingWorkspaceId: input.actingWorkspaceId,
         userAccountId: input.userAccountId,
         now: this.now(),
+        produceInitialTermsVersionDraft,
       },
       useCase,
     );
@@ -212,8 +314,144 @@ export class ProjectRequestService {
     }
     const accepted = result.value as AcceptProjectRequestResult;
     return {
-      projectRequest: toPublicProjectRequest(accepted.projectRequest),
+      projectRequest: toPublicProjectRequest(accepted.projectRequest, null, accepted.deal.id),
       deal: toPublicDeal(accepted.deal),
+      initialTermsVersion: toPublicInitialTermsVersion(accepted.initialTermsVersion, true),
+    };
+  }
+
+  /**
+   * Produce + structurally validate the initial TermsVersion draft
+   * the repository will persist alongside the new Deal. The
+   * `bg5ProposedTermsV1Schema` is the same strict Zod schema the
+   * DealTermsService uses — the application is the only validation
+   * point, and no Deal may exist without a strictly valid
+   * TermsVersion. A malformed candidate collapses to
+   * `PROJECT_REQUEST_TERMS_DRAFT_INVALID` (no Deal is created).
+   *
+   * The adapter's `dealId` argument is constructed from the
+   * ProjectRequest id so the adapter can produce a deterministic
+   * proposal for the buildathon journey; the adapter's candidate
+   * is keyed by the application boundary, not by the persisted
+   * Deal id (which does not exist yet at this point).
+   */
+
+  /**
+   * M2 (#88) Codex finding (post 8d1ac3b): load the
+   * allow-listed ProjectBrief content (originalText +
+   * structured required / preferred criteria) and project it
+   * onto the public ProjectRequest DTO. Fail-closed (`null`)
+   * when the repository is not wired OR the row is absent OR
+   * the load throws — the page renders the explicit "brief
+   * content unavailable" copy when the read fails.
+   *
+   * The caller's authority is already enforced by
+   * `requireActingMembership` + the buyer/seller party check
+   * above; the brief is itself a public per the M1 Matchmaker
+   * contract (the buyer's request to a seller surfaces the
+   * buyer's own text + criteria), so loading it does not leak
+   * identity.
+   */
+  private async loadProjectBriefForPublic(
+    projectBriefId: string,
+  ): Promise<ProjectRequestPublicV1["brief"]> {
+    if (this.projectBriefRepository === null) return null;
+    try {
+      const row = await this.projectBriefRepository.findBriefById(projectBriefId);
+      if (row === null) return null;
+      const requiredCriteria =
+        row.criteria.required === undefined ? undefined : row.criteria.required;
+      const preferredCriteria =
+        row.criteria.preferred === undefined
+          ? undefined
+          : {
+              categoryKeys: row.criteria.preferred.categoryKeys ?? [],
+              serviceModes: row.criteria.preferred.serviceModes ?? [],
+            };
+      return {
+        originalText: row.briefText,
+        ...(requiredCriteria !== undefined ? { requiredCriteria } : {}),
+        ...(preferredCriteria !== undefined ? { preferredCriteria } : {}),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private async produceInitialTermsVersionDraft(
+    input: AcceptProjectRequestInput,
+    prRow: {
+      readonly id: string;
+      readonly buyerWorkspaceId: string;
+      readonly sellerWorkspaceId: string;
+      readonly serviceOfferingId: string;
+      readonly projectBriefId: string;
+    },
+  ): Promise<InitialTermsVersionDraft> {
+    // The Deal summary is needed to thread buyer/seller Workspace ids
+    // + the ServiceOffering id into the AI boundary input. The
+    // ProjectRequestRepository already exposes the persisted row;
+    // we re-read it for the strict input shape so the adapter does
+    // not need Prisma access. A null lookup (rare — the row was
+    // deleted between the create call and this accept) is handled
+    // by the caller, which falls back to placeholder ids derived
+    // from the input + projectRequestId.
+    const aiInput: DealTermsAiDraftInputV1 = {
+      dealId: `pending-${prRow.id}`,
+      buyerWorkspaceId: prRow.buyerWorkspaceId,
+      sellerWorkspaceId: prRow.sellerWorkspaceId,
+      serviceOfferingId: prRow.serviceOfferingId,
+      projectBriefId: prRow.projectBriefId,
+    };
+    const output: DealTermsAiDraftOutputV1 =
+      await this.termsDraftAiAdapter.draftProposedTerms(aiInput);
+    // Strict validate the candidate at the trusted boundary.
+    const parsed = bg5ProposedTermsV1Schema.safeParse(output.candidate);
+    if (!parsed.success) {
+      // Mirror the DealTermsService diagnostic-only logging seam so
+      // server-side logs retain the AI diagnostic while the public
+      // envelope receives a generic typed rejection.
+      const diagnostic = {
+        provider: output.provider,
+        issueCount: parsed.error.issues.length,
+        issues: parsed.error.issues.map((i) => ({
+          path: i.path.join("."),
+          code: i.code,
+          message: i.message,
+        })),
+      };
+      console.error(
+        "[project-request] AI TermsVersion draft validation failed:",
+        JSON.stringify(diagnostic),
+      );
+      throw new ProjectRequestError(
+        "The drafted terms were invalid.",
+        "PROJECT_REQUEST_TERMS_DRAFT_INVALID",
+      );
+    }
+    return {
+      scope: parsed.data.scope,
+      deliverables: parsed.data.deliverables.map((d) => ({
+        title: d.title,
+        description: d.description,
+      })),
+      schedule: {
+        startDate: parsed.data.schedule.startDate,
+        endDate: parsed.data.schedule.endDate,
+        deliveryDays: parsed.data.schedule.deliveryDays,
+      },
+      price: {
+        amountMinor: parsed.data.price.amountMinor,
+        currency: parsed.data.price.currency,
+      },
+      revisionAllowance: parsed.data.revisionAllowance,
+      rightsSummary: parsed.data.rightsSummary,
+      ...(parsed.data.fundingDeadlineAt !== undefined
+        ? { fundingDeadlineAt: parsed.data.fundingDeadlineAt }
+        : {}),
+      aiProvider: output.provider,
+      aiModelId: output.modelId,
+      aiFallbackUsed: output.provider === "deterministic-fallback",
     };
   }
 
@@ -299,7 +537,19 @@ export class ProjectRequestService {
     ) {
       throw new ProjectRequestError("ProjectRequest not found.", "PROJECT_REQUEST_NOT_FOUND");
     }
-    return { projectRequest: toPublicProjectRequest(existing) };
+    // M2 (#88) Codex finding (post 8d1ac3b): surface the
+    // allow-listed ProjectBrief content (originalText +
+    // required / preferred criteria) so the ProjectRequest
+    // detail page renders the buyer's real constraints
+    // instead of a generic placeholder. The lookup is
+    // fail-closed: null when the repository is not wired
+    // OR the row is absent. The (buyerWorkspaceId,
+    // actingWorkspaceId) authority is already enforced
+    // above; a cross-Workspace brief read would not leak
+    // identity (brief.briefText is public per the M1
+    // Matchmaker contract).
+    const brief = await this.loadProjectBriefForPublic(existing.projectBriefId);
+    return { projectRequest: toPublicProjectRequest(existing, brief) };
   }
 
   /**
@@ -335,7 +585,7 @@ export class ProjectRequestService {
       ...(input.statusFilter ? { statusFilter: input.statusFilter } : {}),
     });
     return {
-      projectRequests: rows.map(toPublicProjectRequest),
+      projectRequests: rows.map((row) => toPublicProjectRequest(row)),
     };
   }
 
@@ -470,7 +720,11 @@ function evaluateCreateUseCase(
 
 // ---------- DTO mapping ----------
 
-export function toPublicProjectRequest(persisted: PersistedProjectRequest): ProjectRequestPublicV1 {
+export function toPublicProjectRequest(
+  persisted: PersistedProjectRequest,
+  brief: ProjectRequestPublicV1["brief"] = null,
+  dealId: ProjectRequestPublicV1["dealId"] = null,
+): ProjectRequestPublicV1 {
   // Private human-actor identifiers are intentionally omitted from
   // the counterparty-visible surface. The persisted columns remain
   // in PostgreSQL as audit evidence (and are available to internal
@@ -485,12 +739,26 @@ export function toPublicProjectRequest(persisted: PersistedProjectRequest): Proj
   // fields are populated by the repository's read paths; the
   // transactional create / accept / decline paths leave them null
   // because the UI immediately re-lists and re-renders.
+  //
+  // M2 (#88) Codex finding (post 8d1ac3b): the optional
+  // `brief` sub-object carries the allow-listed ProjectBrief
+  // content (originalText + structured required / preferred
+  // criteria) so the ProjectRequest detail page renders the
+  // buyer's real constraints instead of a generic placeholder.
+  // The shape mirrors the BG3 Matchmaker criteria schema; the
+  // caller passes `null` (default) when the brief is absent or
+  // the lookup is fail-closed.
   return {
     projectRequestId: persisted.id,
     buyerWorkspaceId: persisted.buyerWorkspaceId,
     sellerWorkspaceId: persisted.sellerWorkspaceId,
     serviceOfferingId: persisted.serviceOfferingId,
     projectBriefId: persisted.projectBriefId,
+    // M2 (#88) Codex finding (post 8d1ac3b): the Accepted
+    // ProjectRequest carries the created Deal id so the detail
+    // page can route the human to /deals/:dealId. Null when
+    // Pending or Declined.
+    dealId,
     status: persisted.status,
     sellerDecisionAt: persisted.sellerDecisionAt ? persisted.sellerDecisionAt.toISOString() : null,
     sellerConsentAt: persisted.sellerConsentAt ? persisted.sellerConsentAt.toISOString() : null,
@@ -499,6 +767,7 @@ export function toPublicProjectRequest(persisted: PersistedProjectRequest): Proj
     sellerWorkspaceName: persisted.sellerWorkspaceName,
     serviceOfferingTitle: persisted.serviceOfferingTitle,
     briefExcerpt: persisted.briefExcerpt,
+    brief,
   };
 }
 
@@ -513,6 +782,44 @@ export function toPublicDeal(persisted: PersistedDeal): DealPublicV1 {
     status: persisted.status,
     activatedAt: persisted.activatedAt ? persisted.activatedAt.toISOString() : null,
     createdAt: persisted.createdAt.toISOString(),
+  };
+}
+
+/**
+ * Map the persisted TermsVersion row to the strict allow-listed
+ * public DTO. Mirrors `toPublicTermsVersion` in
+ * `apps/api/src/deal-terms/deal-terms.service.ts` so the accept
+ * response and the Deal view return identical shapes.
+ */
+export function toPublicInitialTermsVersion(
+  persisted: PersistedTermsVersion,
+  isCurrent: boolean,
+): Bg5TermsVersionPublicV1 {
+  const deliverables = persisted.deliverablesJson as Array<{
+    title: string;
+    description: string;
+  }>;
+  const schedule = persisted.scheduleJson as InitialTermsVersionDraft["schedule"];
+  return {
+    termsVersionId: persisted.id,
+    dealId: persisted.dealId,
+    version: persisted.version,
+    scope: persisted.scope,
+    deliverables,
+    schedule,
+    price: { amountMinor: persisted.priceAmountMinor, currency: "USD" },
+    revisionAllowance: persisted.revisionAllowance,
+    rightsSummary: persisted.rightsSummary,
+    fundingDeadlineAt: persisted.fundingDeadlineAt
+      ? persisted.fundingDeadlineAt.toISOString()
+      : null,
+    aiProvider: persisted.aiProvider as Bg5TermsVersionPublicV1["aiProvider"],
+    aiModelId: persisted.aiModelId,
+    aiFallbackUsed: persisted.aiFallbackUsed,
+    aiDraftedUnapprovedBadge: true,
+    draftedAt: persisted.draftedAt.toISOString(),
+    createdAt: persisted.createdAt.toISOString(),
+    isCurrentVersion: isCurrent,
   };
 }
 

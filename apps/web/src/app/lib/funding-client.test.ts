@@ -70,6 +70,11 @@ test("fundDeal issues a POST to /api/deals/:dealId/funding with credentials + JS
         currentTermsVersion: null,
         currentApprovals: [],
         sellerConsent: null,
+        // M2 (#88) Codex finding: the Bg5DealViewV1 schema
+        // requires the `actingSideHasDealApprover` field. The
+        // funding route does not depend on it, but the strict
+        // shared Zod schema fails closed without it.
+        actingSideHasDealApprover: false,
       },
       fundingStatus: {
         status: "Confirmed",
@@ -179,6 +184,11 @@ test("fundDeal public response does NOT contain paymentIntentId, correlationId, 
         currentTermsVersion: null,
         currentApprovals: [],
         sellerConsent: null,
+        // M2 (#88) Codex finding: the Bg5DealViewV1 schema
+        // requires the `actingSideHasDealApprover` field. The
+        // funding route does not depend on it, but the strict
+        // shared Zod schema fails closed without it.
+        actingSideHasDealApprover: false,
       },
       fundingStatus: {
         status: "Confirmed",

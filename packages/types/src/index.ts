@@ -461,6 +461,16 @@ export const apiErrorCodeV1Schema = z.enum([
   // Transient marketplace-busy envelope. Maps to 503 so the buyer or
   // seller can retry the request without changing the payload.
   "PROJECT_REQUEST_UNAVAILABLE",
+  // M2 (#88): the AI candidate for the initial TermsVersion (the
+  // unapproved row persisted alongside the new Deal on a successful
+  // accept) failed the strict `bg5ProposedTermsV1Schema` runtime
+  // validation. 400 Bad Request — a malformed AI candidate must not
+  // produce a Deal; the transaction rolls back with no state change.
+  // This is distinct from `BG5_TERMS_DRAFT_INVALID` (which covers
+  // post-accept replacement drafts) because the row is being
+  // created as part of the accept command, not via
+  // /api/deals/:id/terms-draft.
+  "PROJECT_REQUEST_TERMS_DRAFT_INVALID",
   // Generic ProjectRequest internal-failure envelope. Maps to 500.
   // Used only when the handler catches an exception that does not
   // match a typed ProjectRequestError; the underlying message is
@@ -628,6 +638,34 @@ export const apiErrorCodeV1Schema = z.enum([
   // confirmation field. The flag is transient and is never persisted
   // on the sample row.
   "AUDIO_SAMPLE_FINAL_REMOVAL_CONFIRMATION_REQUIRED",
+  // M2 (#88): Personal-Workspace DealApprover JIT permission setup
+  // surface. The codes never expose private audit identifiers
+  // (`grantedByUserId`, `dealApproverId`); they only carry the
+  // bounded typed rejection needed for the safe envelope. Status
+  // mapping in `apps/api/src/lib/errors.ts` is the single source of
+  // truth.
+  // 400 — the request body failed runtime validation (missing or
+  // malformed `actingWorkspaceId`, `confirmationVersion`, or
+  // `idempotencyKey`).
+  "DEAL_APPROVER_INVALID",
+  // 403 — the acting Workspace is not Personal, the Workspace is not
+  // Active, the authenticated human is not a current member, or some
+  // other authorization rejection collapsed by the safe envelope.
+  "DEAL_APPROVER_FORBIDDEN",
+  // 409 — a different idempotencyKey against an already-provisioned
+  // (workspaceId, userId) tuple, OR a same-key retry after a
+  // committed failure whose persisted row is durable evidence of the
+  // collapse. A same-key retry after a successful provisioning
+  // converges on the existing row and does NOT surface this code.
+  "DEAL_APPROVER_ALREADY_PROVISIONED",
+  // 422 — the supplied `confirmationVersion` is not the closed
+  // canonical value (`m2-deal-approver-v1`). The human must accept
+  // the current version; a stale one is a typed rejection so the
+  // application boundary cannot accept an unknown / future version.
+  "DEAL_APPROVER_CONFIRMATION_VERSION_MISMATCH",
+  // 500 — unexpected internal failure outside the typed
+  // DealApproverError surface.
+  "DEAL_APPROVER_INTERNAL_FAILED",
 ]);
 export type ApiErrorCodeV1 = z.infer<typeof apiErrorCodeV1Schema>;
 
@@ -2603,6 +2641,12 @@ export const projectRequestPublicV1Schema = z
     sellerWorkspaceId: z.string().min(1).max(128),
     serviceOfferingId: z.string().min(1).max(128),
     projectBriefId: z.string().min(1).max(128),
+    // M2 (#88) Codex finding (post 8d1ac3b): the Accepted
+    // ProjectRequest carries the Deal id the seller
+    // acceptance created so the detail page can route the
+    // human straight to /deals/:dealId. Null when the request
+    // has not been Accepted (Pending / Declined).
+    dealId: z.string().min(1).max(128).nullable().optional(),
     status: z.enum(projectRequestStatusValuesV1),
     sellerDecisionAt: z.string().datetime().nullable(),
     sellerConsentAt: z.string().datetime().nullable(),
@@ -2616,6 +2660,32 @@ export const projectRequestPublicV1Schema = z
     sellerWorkspaceName: z.string().min(1).max(200).nullable(),
     serviceOfferingTitle: z.string().min(1).max(200).nullable(),
     briefExcerpt: z.string().max(280).nullable(),
+    // M2 (#88) Codex finding (post 8d1ac3b): surface the
+    // actual allow-listed ProjectBrief content (originalText +
+    // required / preferred criteria) so the ProjectRequest
+    // detail page renders the buyer's real constraints instead
+    // of a generic placeholder. The shape mirrors the BG3
+    // Matchmaker criteria schema; null when the row is absent
+    // or fail-closed on the read path.
+    brief: z
+      .object({
+        originalText: z.string().min(1).max(2000),
+        requiredCriteria: talentSearchRequiredCriteriaV1Schema.optional(),
+        preferredCriteria: z
+          .object({
+            categoryKeys: optionalBoundedStringArray(1, 64, "categoryKeys"),
+            serviceModes: z
+              .array(serviceModeSchema)
+              .max(8)
+              .transform((arr) => (arr.length === 0 ? undefined : arr))
+              .optional(),
+          })
+          .strict()
+          .optional(),
+      })
+      .strict()
+      .nullable()
+      .optional(),
   })
   .strict();
 export type ProjectRequestPublicV1 = z.infer<typeof projectRequestPublicV1Schema>;
@@ -2812,15 +2882,6 @@ export const respondProjectRequestRequestV1Schema = z
   })
   .strict();
 export type RespondProjectRequestRequestV1 = z.infer<typeof respondProjectRequestRequestV1Schema>;
-
-export const acceptProjectRequestResponseV1Schema = z
-  .object({
-    ok: z.literal(true),
-    projectRequest: projectRequestPublicV1Schema,
-    deal: dealPublicV1Schema,
-  })
-  .strict();
-export type AcceptProjectRequestResponseV1 = z.infer<typeof acceptProjectRequestResponseV1Schema>;
 
 export const declineProjectRequestResponseV1Schema = z
   .object({
@@ -3054,6 +3115,17 @@ export const bg5DealViewV1Schema = z
     currentTermsVersion: bg5TermsVersionPublicV1Schema.nullable(),
     currentApprovals: z.array(bg5DealApprovalPublicV1Schema).max(2),
     sellerConsent: bg5SellerConsentProjectionV1Schema.nullable(),
+    // M2 (#88) Codex finding: render the permission CTA and the
+    // approve CTA MUTUALLY EXCLUSIVELY. The page needs an explicit
+    // signal that the authenticated human (acting on the deal's
+    // buyer or seller side) holds an explicit `DealApprover`
+    // authorization for that Workspace. The server derives this
+    // from the durable `deal_approvers` row keyed by
+    // (workspaceId, userId) + the authenticated `UserAccount.id`.
+    // Null when the human is not a current member of either
+    // side (the page already requires membership) or when the
+    // acting Workspace id is not a party to this Deal.
+    actingSideHasDealApprover: z.boolean(),
   })
   .strict();
 export type Bg5DealViewV1 = z.infer<typeof bg5DealViewV1Schema>;
@@ -3097,6 +3169,116 @@ export const bg5ApproveTermsResponseV1Schema = z
   })
   .strict();
 export type Bg5ApproveTermsResponseV1 = z.infer<typeof bg5ApproveTermsResponseV1Schema>;
+
+// ===========================================================================
+// M2 (#88) — extended accept ProjectRequest response shape.
+//
+// Per the reconciled M2 specification (and ticket #88), seller
+// acceptance atomically creates exactly one Negotiating Deal AND one
+// AI-drafted, unapproved current TermsVersion. The accept response
+// envelope carries the TermsVersion row alongside the Deal so the
+// browser can route the seller to the Negotiating Deal detail page
+// without a second fetch.
+//
+// This declaration lives here rather than alongside the original
+// `acceptProjectRequestResponseV1Schema` because it references
+// `bg5TermsVersionPublicV1Schema`, which is declared further down
+// in this file. JavaScript module hoisting does NOT cross the
+// `export const` statement boundary so the reference has to follow
+// the dependency order.
+// ===========================================================================
+
+export const acceptProjectRequestResponseV1Schema = z
+  .object({
+    ok: z.literal(true),
+    projectRequest: projectRequestPublicV1Schema,
+    deal: dealPublicV1Schema,
+    // The AI-drafted, unapproved current TermsVersion the accept
+    // transaction persisted atomically alongside the new Deal.
+    // Same DTO as the Deal view's `currentTermsVersion` so the
+    // browser can render the row immediately without a second round
+    // trip.
+    initialTermsVersion: bg5TermsVersionPublicV1Schema,
+  })
+  .strict();
+export type AcceptProjectRequestResponseV1 = z.infer<typeof acceptProjectRequestResponseV1Schema>;
+
+// ===========================================================================
+// Milestone 2 (#88) — Personal-Workspace DealApprover JIT permission setup
+//
+// Per the reconciled M2 specification (and ticket #88), provisioning a
+// `DealApprover` authorization is capability-neutral, Personal-Workspace-
+// scoped, and explicit. The human accepts a closed, versioned
+// approval-authority attestation before the authorization row exists.
+// Setup is offered as optional dashboard readiness AND just-in-time
+// from either party's attempted approval; it NEVER approves terms.
+//
+// This slice owns the schema-only surface for #88A. The route, the
+// repository, and the UI land in later slices (#88C, #88D, #88E).
+// ===========================================================================
+
+// ---------- Closed confirmation version ----------
+//
+// The closed canonical version for the Personal-Workspace
+// approval-authority attestation. The application boundary enforces
+// this exact value at the trusted boundary; a stale or unknown version
+// fails closed with `DEAL_APPROVER_CONFIRMATION_VERSION_MISMATCH`. The
+// suffix pattern matches the established M2 attestation family
+// (e.g., `m2-service-activation-v1`, `m2-seller-profile-publication-v1`,
+// `m2-audio-confirmation-v1`).
+export const m2DealApproverConfirmationVersionV1 = "m2-deal-approver-v1" as const;
+
+// ---------- Public DTOs (strict allow-list) ----------
+//
+// Minimal allow-listed DealApprover projection. The application MUST
+// NOT serialize `grantedByUserId` or the workspace's `ownerUserId`;
+// the public envelope exposes only the bounded permission
+// identifier, the Workspace it was granted for, and the grant
+// timestamp. The human account identity stays on the private
+// `DealApprover` row + the `DealApproverAcceptance` evidence
+// table — it is NEVER serialized into the public DTO (AGENTS.md:
+// "Do not expose account identity, membership, wallet, embedding,
+// or storage internals publicly"). Customer-facing copy refers
+// to this as "permission to approve terms", never `DealApprover`
+// or provider / governance internals (ticket #88; M2 UX contract).
+export const dealApproverPublicV1Schema = z
+  .object({
+    dealApproverId: z.string().min(1).max(128),
+    workspaceId: z.string().min(1).max(128),
+    grantedAt: z.string().datetime(),
+  })
+  .strict();
+export type DealApproverPublicV1 = z.infer<typeof dealApproverPublicV1Schema>;
+
+// ---------- Request / response schemas ----------
+//
+// Provision request body. The acting Workspace id is required so the
+// route can revalidate current Personal-Workspace membership. The
+// closed `confirmationVersion` is REQUIRED — the human must accept the
+// current version of the approval-authority attestation. The
+// `idempotencyKey` is a client-supplied UUID; same-key retry converges
+// on the persisted row and does NOT create a duplicate.
+export const provisionDealApproverRequestV1Schema = z
+  .object({
+    actingWorkspaceId: z.string().min(1).max(128),
+    confirmationVersion: z.literal(m2DealApproverConfirmationVersionV1),
+    idempotencyKey: z.string().uuid(),
+  })
+  .strict();
+export type ProvisionDealApproverRequestV1 = z.infer<typeof provisionDealApproverRequestV1Schema>;
+
+// Provision response. Wraps the allow-listed `DealApprover` projection.
+// The route MUST NOT serialize the `grantedByUserId`, the persisted
+// `confirmationVersion` audit row, the `idempotencyKey`, or the
+// `requestId` — those live only on the durable `DealApproverAcceptance`
+// evidence row.
+export const provisionDealApproverResponseV1Schema = z
+  .object({
+    ok: z.literal(true),
+    dealApprover: dealApproverPublicV1Schema,
+  })
+  .strict();
+export type ProvisionDealApproverResponseV1 = z.infer<typeof provisionDealApproverResponseV1Schema>;
 
 // Read the Deal view. No request body. The route accepts the Deal id
 // in the path and the acting Workspace id as a query parameter so

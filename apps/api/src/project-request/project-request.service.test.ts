@@ -388,11 +388,178 @@ test("acceptProjectRequest atomically transitions Pending and creates exactly on
   assert.equal(result.deal.projectRequestId, created.projectRequest.projectRequestId);
   assert.equal(result.deal.buyerWorkspaceId, BUYER_WORKSPACE_ID);
   assert.equal(result.deal.sellerWorkspaceId, SELLER_WORKSPACE_ID);
+  // M2 (#88): the accept transaction also persists an AI-drafted,
+  // unapproved initial TermsVersion (v1) atomically alongside the
+  // new Deal. The row carries the schema-mandated
+  // `aiDraftedUnapprovedBadge: true` literal + the strict
+  // `bg5ProposedTermsV1Schema` shape the existing BG5 Deal view
+  // surfaces unchanged.
+  assert.equal(result.initialTermsVersion.version, 1);
+  assert.equal(result.initialTermsVersion.dealId, result.deal.dealId);
+  assert.equal(result.initialTermsVersion.isCurrentVersion, true);
+  assert.equal(result.initialTermsVersion.aiDraftedUnapprovedBadge, true);
+  assert.equal(result.initialTermsVersion.price.currency, "USD");
+  assert.ok(result.initialTermsVersion.deliverables.length >= 1);
   // The persisted deal must exist once.
   const stored = await projectRequestRepo.findProjectRequestById(
     created.projectRequest.projectRequestId,
   );
   assert.equal(stored?.status, "Accepted");
+});
+
+// M2 (#88): same-attempt retry on the same payload converges on the
+// SAME Deal id AND the SAME TermsVersion id; no duplicate rows.
+test("acceptProjectRequest same-attempt retry converges on the same Deal + initial TermsVersion (no duplicates)", async () => {
+  const { projectRequestService } = buildFixture();
+  const created = await projectRequestService.createProjectRequest({
+    userAccountId: BUYER_USER_ID,
+    actingWorkspaceId: BUYER_WORKSPACE_ID,
+    projectBriefId: BRIEF_ID,
+    serviceOfferingId: OFFERING_ID,
+  });
+  const first = await projectRequestService.acceptProjectRequest({
+    userAccountId: SELLER_USER_ID,
+    actingWorkspaceId: SELLER_WORKSPACE_ID,
+    projectRequestId: created.projectRequest.projectRequestId,
+  });
+  // Second accept on the same (already-Accepted) request fails
+  // closed with PROJECT_REQUEST_ALREADY_RESPONDED — the unique
+  // index on (deals.projectRequestId) + the guarded
+  // updateMany WHERE status='Pending' are the durable convergence
+  // keys. The Deal id + initial TermsVersion id of the first
+  // attempt is the durable identity; the second attempt must NOT
+  // create a new row.
+  await assert.rejects(
+    projectRequestService.acceptProjectRequest({
+      userAccountId: SELLER_USER_ID,
+      actingWorkspaceId: SELLER_WORKSPACE_ID,
+      projectRequestId: created.projectRequest.projectRequestId,
+    }),
+    (err: unknown) =>
+      err instanceof Error &&
+      err.name === "ProjectRequestError" &&
+      (err as { code?: string }).code === "PROJECT_REQUEST_ALREADY_RESPONDED",
+  );
+  // The Deal + TermsVersion identity the first attempt surfaced is
+  // the single canonical record.
+  assert.equal(first.deal.status, "Negotiating");
+  assert.equal(first.initialTermsVersion.version, 1);
+  assert.equal(first.initialTermsVersion.aiDraftedUnapprovedBadge, true);
+});
+
+// M2 (#88): decline records the canonical outcome and creates no
+// Deal AND no TermsVersion.
+test("declineProjectRequest creates no Deal and no TermsVersion (canonical outcome)", async () => {
+  const { projectRequestService } = buildFixture();
+  const created = await projectRequestService.createProjectRequest({
+    userAccountId: BUYER_USER_ID,
+    actingWorkspaceId: BUYER_WORKSPACE_ID,
+    projectBriefId: BRIEF_ID,
+    serviceOfferingId: OFFERING_ID,
+  });
+  const result = await projectRequestService.declineProjectRequest({
+    userAccountId: SELLER_USER_ID,
+    actingWorkspaceId: SELLER_WORKSPACE_ID,
+    projectRequestId: created.projectRequest.projectRequestId,
+  });
+  assert.equal(result.projectRequest.status, "Declined");
+  assert.equal(result.projectRequest.sellerConsentAt, null);
+  // Decline must NOT carry a Deal or initial TermsVersion — the
+  // existing service signature enforces that. The TypeScript
+  // compiler catches the structural guarantee; this test is the
+  // runtime mirror.
+  const declined = result as unknown as { deal?: unknown; initialTermsVersion?: unknown };
+  assert.equal(declined.deal, undefined);
+  assert.equal(declined.initialTermsVersion, undefined);
+});
+
+// M2 (#88) Codex finding: the AI adapter must be invoked
+// exactly once on a successful accept and never on a failing
+// accept (unauthorized, already-responded, etc.) or a decline.
+// The test wires a spy AI adapter through the `termsDraftAiAdapter`
+// dependency and counts the invocations.
+test("acceptProjectRequest invokes the AI adapter exactly once on success and never on failure", async () => {
+  const { projectRequestRepo, authRepo, workspaceAuthorizationService } = buildFixture();
+  // Spy adapter: increments a counter on every call.
+  let aiCalls = 0;
+  const spyAdapter = {
+    key: "deterministic-fallback" as const,
+    draftProposedTerms(): Promise<{
+      provider: "deterministic-fallback" | "managed";
+      modelId: string | null;
+      candidate: Record<string, unknown>;
+    }> {
+      aiCalls += 1;
+      return Promise.resolve({
+        provider: "deterministic-fallback",
+        modelId: null,
+        candidate: {
+          scope: "Test scope.",
+          deliverables: [{ title: "Test", description: "Test deliverable." }],
+          schedule: { startDate: "2026-01-01", endDate: "2026-01-22", deliveryDays: 21 },
+          price: { amountMinor: 75000, currency: "USD" },
+          revisionAllowance: 1,
+          rightsSummary: "Test rights.",
+        },
+      });
+    },
+  };
+  // Build a service that uses the spy adapter instead of the
+  // deterministic fallback. The repository / auth surface stays
+  // the same; the new AI boundary is the only difference.
+  const serviceWithSpy = new ProjectRequestService({
+    projectRequestRepository: projectRequestRepo,
+    workspaceAuthorizationService,
+    termsDraftAiAdapter: spyAdapter,
+  });
+  // The fixture's authRepo only knows the seeded users, so
+  // membership is satisfied.
+  void authRepo;
+
+  // 1. Successful accept invokes the adapter exactly once.
+  const created = await serviceWithSpy.createProjectRequest({
+    userAccountId: BUYER_USER_ID,
+    actingWorkspaceId: BUYER_WORKSPACE_ID,
+    projectBriefId: BRIEF_ID,
+    serviceOfferingId: OFFERING_ID,
+  });
+  aiCalls = 0;
+  await serviceWithSpy.acceptProjectRequest({
+    userAccountId: SELLER_USER_ID,
+    actingWorkspaceId: SELLER_WORKSPACE_ID,
+    projectRequestId: created.projectRequest.projectRequestId,
+  });
+  assert.equal(aiCalls, 1, "AI adapter must be invoked exactly once on success");
+
+  // 2. Already-responded retry does NOT invoke the adapter.
+  aiCalls = 0;
+  await assert.rejects(
+    serviceWithSpy.acceptProjectRequest({
+      userAccountId: SELLER_USER_ID,
+      actingWorkspaceId: SELLER_WORKSPACE_ID,
+      projectRequestId: created.projectRequest.projectRequestId,
+    }),
+    (err: unknown) =>
+      err instanceof Error &&
+      err.name === "ProjectRequestError" &&
+      (err as { code?: string }).code === "PROJECT_REQUEST_ALREADY_RESPONDED",
+  );
+  assert.equal(aiCalls, 0, "AI adapter must NOT be invoked on already-responded retry");
+
+  // 3. Decline does NOT invoke the adapter.
+  aiCalls = 0;
+  const created2 = await serviceWithSpy.createProjectRequest({
+    userAccountId: BUYER_USER_ID,
+    actingWorkspaceId: BUYER_WORKSPACE_ID,
+    projectBriefId: BRIEF_ID,
+    serviceOfferingId: OFFERING_ID,
+  });
+  await serviceWithSpy.declineProjectRequest({
+    userAccountId: SELLER_USER_ID,
+    actingWorkspaceId: SELLER_WORKSPACE_ID,
+    projectRequestId: created2.projectRequest.projectRequestId,
+  });
+  assert.equal(aiCalls, 0, "AI adapter must NOT be invoked on decline");
 });
 
 test("acceptProjectRequest rejects a buyer Workspace member (only the seller side may accept)", async () => {

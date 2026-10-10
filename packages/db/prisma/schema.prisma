@@ -263,6 +263,18 @@ model UserAccount {
   // table. ON DELETE RESTRICT on the FK preserves the durable update
   // evidence row even if the source UserAccount is hard-deleted.
   updatedServiceOfferings          ServiceOfferingUpdate[]     @relation("ServiceOfferingUpdateUpdatedBy")
+  // M2 (#88): reverse relation on the DealApproverAcceptance evidence
+  // table. ON DELETE RESTRICT on the FK preserves the durable
+  // acceptance row even if the source UserAccount is hard-deleted.
+  dealApproverAcceptances         DealApproverAcceptance[]    @relation("DealApproverAcceptanceUser")
+  // M2 (#88): audit attribution for who granted the DealApprover
+  // authorization in the JIT setup flow. For Personal-Workspace
+  // self-service this is the SAME human (the human accepts the
+  // versioned attestation on their own Workspace); for a future
+  // Organization flow it would be the Owner/Admin who grants. The
+  // column is non-null and ON DELETE RESTRICT preserves the durable
+  // audit row.
+  dealApproverAcceptanceGrants    DealApproverAcceptance[]    @relation("DealApproverAcceptanceGrantedBy")
 
   @@map("user_accounts")
 }
@@ -388,6 +400,10 @@ model Workspace {
   // relation on the ServiceOfferingUpdate table; ON DELETE RESTRICT
   // on the FK preserves the durable update evidence row.
   serviceOfferingUpdates    ServiceOfferingUpdate[]
+  // M2 (#88): reverse relation on the DealApproverAcceptance
+  // evidence table; ON DELETE RESTRICT on the FK preserves the
+  // durable acceptance row even if the Workspace is hard-deleted.
+  dealApproverAcceptances   DealApproverAcceptance[]
 
   @@map("workspaces")
 }
@@ -1232,6 +1248,14 @@ model DealApprover {
   grantedBy       UserAccount @relation("DealApproverGrantedBy", fields: [grantedByUserId], references: [id], onDelete: Restrict)
   // Reverse relation: every DealApproval that cites this DealApprover.
   approvals DealApproval[]
+  // M2 (#88): reverse relation on the DealApproverAcceptance
+  // evidence table; a DealApprover row may have one or more
+  // append-only acceptance rows that recorded who created it and which
+  // confirmation version they accepted. The (workspaceId,
+  // idempotencyKey) UNIQUE constraint on the acceptance table is the
+  // authoritative convergence key — this reverse relation is purely
+  // a Prisma convenience.
+  acceptances     DealApproverAcceptance[]
 
   // One explicit authorization per (Workspace, user) tuple. A future
   // ticket that re-grants after revocation can either insert a new row
@@ -1241,6 +1265,73 @@ model DealApprover {
   @@index([workspaceId])
   @@index([userId])
   @@map("deal_approvers")
+}
+
+// M2 (#88): narrow append-only DealApproverAcceptance evidence.
+//
+// Personal-Workspace-only self-service provisioning of a `DealApprover`
+// authorization. Every successful provisioning command creates ONE row
+// that records:
+//
+//   - the (workspaceId, userId) tuple authorized (== DealApprover.id)
+//   - the closed confirmation version the human accepted (e.g.
+//     `m2-deal-approver-v1`); a stale or unknown version fails at the
+//     application boundary with a typed error
+//   - the actor (== `userId` for the Personal-Workspace self-service
+//     path; the column is recorded separately from the acting user id
+//     so a future Organization-grant flow can populate it from the
+//     granting Owner/Admin without rewriting the column semantics)
+//   - the request correlation id (mirrors every other evidence table)
+//   - the client-supplied UUID idempotency key
+//
+// The (workspaceId, idempotencyKey) UNIQUE constraint is the durable
+// convergence key for same-attempt transport retries; the application
+// also performs the pre-check so this is the second defense, not the
+// first.
+//
+// The acceptance row does NOT create a `DealApproval`; the Provisioning
+// command is independent of any TermsVersion. JIT permission setup
+// returns the human to the same pending Deal and current TermsVersion,
+// where they must perform a separate explicit approval action.
+//
+// ON DELETE RESTRICT on every FK preserves the durable evidence row
+// even if the source UserAccount, Workspace, or DealApprover is ever
+// hard-deleted.
+model DealApproverAcceptance {
+  id                  String   @id @default(cuid())
+  // The DealApprover authorization that this acceptance created (or
+  // matched on retry). NOT a public DTO field; the public envelope
+  // surfaces the bounded `dealApprover` shape only.
+  dealApproverId      String
+  workspaceId         String
+  // The human member that became the authorized approver. Required.
+  userId              String
+  // The acting human who accepted the versioned attestation. For
+  // Personal-Workspace self-service this is the same as `userId`;
+  // the column is split so a future Organization-grant flow can
+  // populate it from the granting Owner/Admin.
+  grantedByUserId     String
+  // Closed confirmation version the human accepted. The application
+  // boundary enforces a single canonical value per slice; a stale
+  // version is a typed rejection.
+  confirmationVersion String
+  acceptedAt          DateTime @default(now())
+  // Client-supplied UUID generated when a new provisioning attempt
+  // begins. Retained across uncertain transport outcomes and Retry
+  // actions; cleared only on definitive success or user-initiated
+  // payload change.
+  idempotencyKey      String
+  requestId           String
+
+  dealApprover DealApprover @relation(fields: [dealApproverId], references: [id], onDelete: Restrict)
+  workspace    Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  user         UserAccount  @relation("DealApproverAcceptanceUser", fields: [userId], references: [id], onDelete: Restrict)
+  grantedBy    UserAccount  @relation("DealApproverAcceptanceGrantedBy", fields: [grantedByUserId], references: [id], onDelete: Restrict)
+
+  @@unique([workspaceId, idempotencyKey], map: "deal_approver_acceptances_workspace_idem_unique_idx")
+  @@index([dealApproverId])
+  @@index([workspaceId, acceptedAt(sort: Desc)])
+  @@map("deal_approver_acceptances")
 }
 
 // TermsVersion is an immutable proposal covering scope, deliverables,

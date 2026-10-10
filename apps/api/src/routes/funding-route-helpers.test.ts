@@ -194,6 +194,12 @@ test("validateFundingResponse accepts a well-formed payload", () => {
         currentTermsVersion: null,
         currentApprovals: [],
         sellerConsent: null,
+        // M2 (#88) Codex finding: the Bg5DealViewV1 schema
+        // requires the `actingSideHasDealApprover` field. The
+        // funding route does not depend on it, but the strict
+        // shared Zod schema must include the new field on every
+        // public envelope.
+        actingSideHasDealApprover: false,
       },
       fundingStatus: {
         status: "Confirmed",
@@ -238,6 +244,12 @@ test("validateFundingResponse rejects drift with BG6_FUNDING_INTERNAL_FAILED", (
         currentTermsVersion: null,
         currentApprovals: [],
         sellerConsent: null,
+        // M2 (#88) Codex finding: the Bg5DealViewV1 schema
+        // requires the `actingSideHasDealApprover` field. The
+        // funding route does not depend on it, but the strict
+        // shared Zod schema must include the new field on every
+        // public envelope.
+        actingSideHasDealApprover: false,
       },
       fundingStatus: {
         status: "Confirmed",

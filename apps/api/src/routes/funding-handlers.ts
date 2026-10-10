@@ -109,6 +109,11 @@ function fundDeal(
             currentTermsVersion: view.currentTermsVersion,
             currentApprovals: view.currentApprovals,
             sellerConsent: view.sellerConsent,
+            // M2 (#88) Codex finding: the Bg5DealViewV1 schema
+            // requires the `actingSideHasDealApprover` field. The
+            // funding route does not depend on it, but the
+            // strict shared Zod schema fails closed without it.
+            actingSideHasDealApprover: view.actingSideHasDealApprover,
           },
           fundingStatus: result.fundingStatus,
         },

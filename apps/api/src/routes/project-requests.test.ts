@@ -145,6 +145,25 @@ class FakeProjectRequestService {
         activatedAt: null,
         createdAt: new Date("2026-08-27T00:00:01Z").toISOString(),
       },
+      initialTermsVersion: {
+        termsVersionId: "tv-1",
+        dealId: "deal-1",
+        version: 1,
+        scope: "Produce the commissioned work described in the brief.",
+        deliverables: [{ title: "Primary", description: "Mix-ready master." }],
+        schedule: { startDate: "2026-01-01", endDate: "2026-01-22", deliveryDays: 21 },
+        price: { amountMinor: 75000, currency: "USD" },
+        revisionAllowance: 1,
+        rightsSummary: "Non-exclusive worldwide rights.",
+        fundingDeadlineAt: null,
+        aiProvider: "deterministic-fallback",
+        aiModelId: null,
+        aiFallbackUsed: true,
+        aiDraftedUnapprovedBadge: true as const,
+        draftedAt: new Date("2026-08-27T00:00:01Z").toISOString(),
+        createdAt: new Date("2026-08-27T00:00:01Z").toISOString(),
+        isCurrentVersion: true,
+      },
     };
   }
 

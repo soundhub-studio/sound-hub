@@ -91,6 +91,11 @@ describe("fetchDeal", () => {
             status: "Accepted",
             sellerConsentAt: "2026-09-01T00:00:05.000Z",
           },
+          // M2 (#88) Codex finding: the Bg5DealViewV1 schema
+          // requires the `actingSideHasDealApprover` field. The
+          // deal page surfaces the permission CTA vs approve
+          // CTA exclusively based on this signal.
+          actingSideHasDealApprover: true,
         },
       },
     });
@@ -120,6 +125,9 @@ describe("fetchDeal", () => {
           currentTermsVersion: null,
           currentApprovals: [],
           sellerConsent: null,
+          // M2 (#88) Codex finding: the Bg5DealViewV1 schema
+          // requires the `actingSideHasDealApprover` field.
+          actingSideHasDealApprover: false,
         },
       },
     });

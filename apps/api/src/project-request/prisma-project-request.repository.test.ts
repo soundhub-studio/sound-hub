@@ -46,7 +46,17 @@ after(async () => {
 
 beforeEach(async () => {
   // Reset only the BG4 rows so the fixture's identity rows (Users,
-  // Workspaces, Profiles, Briefs, Offerings) stay stable.
+  // Workspaces, Profiles, Briefs, Offerings) stay stable. The
+  // termsVersions + dealApprovals rows (added by M2 #88) must be
+  // removed first because they hold RESTRICT FKs to deals and
+  // project requests; deleting deals without first removing the
+  // dependent rows trips the FK constraint.
+  await prisma.dealApproval.deleteMany({
+    where: { termsVersion: { deal: { projectBriefId: fixture.brief.id } } },
+  });
+  await prisma.termsVersion.deleteMany({
+    where: { deal: { projectBriefId: fixture.brief.id } },
+  });
   await prisma.deal.deleteMany({
     where: { projectBriefId: fixture.brief.id },
   });

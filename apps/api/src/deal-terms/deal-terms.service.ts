@@ -86,6 +86,7 @@ import type {
 } from "./deal-terms.repository.js";
 import type { DealTermsAiAdapter } from "./deal-terms-ai-adapter.js";
 import { DeterministicDealTermsAiAdapter } from "./deal-terms-ai-adapter.js";
+import type { DealApproverRepository } from "../deal-approver/deal-approver.repository.js";
 
 export class DealTermsError extends Error {
   constructor(
@@ -121,6 +122,19 @@ export interface DealTermsServiceDeps {
    * historical audit fact that cannot revert once recorded.
    */
   readonly projectRequestRepository?: ProjectRequestRepository;
+  /**
+   * M2 (#88) Codex finding: the Deal view must surface a
+   * derived `actingSideHasDealApprover` boolean so the web
+   * can render the permission CTA and the approve CTA
+   * MUTUALLY EXCLUSIVELY. The service looks up the durable
+   * `deal_approvers` row keyed by (actingWorkspaceId,
+   * userAccountId) through this repository; when omitted, the
+   * derived signal is `false` (fail-closed). The repository is
+   * queried outside the Deal read transaction because the
+   * authorization state is a historical audit fact that
+   * cannot revert once recorded.
+   */
+  readonly dealApproverRepository?: DealApproverRepository;
   readonly aiAdapter?: DealTermsAiAdapter;
   readonly deterministicAiAdapter?: DealTermsAiAdapter;
   readonly now?: () => Date;
@@ -158,6 +172,11 @@ export class DealTermsService {
   private readonly repository: DealTermsRepository;
   private readonly authz: WorkspaceAuthorizationService;
   private readonly projectRequestRepository: ProjectRequestRepository | null;
+  // M2 (#88) Codex finding: nullable repository used to
+  // derive the acting-side authorization signal on the Deal
+  // view. Null when the composition root does not wire it;
+  // the getDeal() path fails closed to `false` in that case.
+  private readonly dealApproverRepository: DealApproverRepository | null;
   private readonly aiAdapter: DealTermsAiAdapter;
   private readonly fallbackAiAdapter: DealTermsAiAdapter;
   private readonly now: () => Date;
@@ -166,6 +185,7 @@ export class DealTermsService {
     this.repository = deps.dealTermsRepository;
     this.authz = deps.workspaceAuthorizationService;
     this.projectRequestRepository = deps.projectRequestRepository ?? null;
+    this.dealApproverRepository = deps.dealApproverRepository ?? null;
     this.fallbackAiAdapter = deps.deterministicAiAdapter ?? new DeterministicDealTermsAiAdapter();
     this.aiAdapter = deps.aiAdapter ?? this.fallbackAiAdapter;
     this.now = deps.now ?? (() => new Date());
@@ -334,6 +354,7 @@ export class DealTermsService {
     readonly currentApprovals: readonly Bg5DealApprovalPublicV1[];
     readonly projectRequest: ProjectRequestPublicV1 | null;
     readonly sellerConsent: Bg5SellerConsentProjectionV1 | null;
+    readonly actingSideHasDealApprover: boolean;
   }> {
     const view = await this.repository.findDealViewInTransaction(
       {
@@ -349,6 +370,18 @@ export class DealTermsService {
     const publicDeal = dealSummaryToPublic(view.value.deal);
     const projectRequest = await this.loadProjectRequest(publicDeal.projectRequestId);
     const sellerConsent = projectRequest ? buildSellerConsentProjection(projectRequest) : null;
+    // M2 (#88) Codex finding: derive the acting-side
+    // authorization signal so the web can render the
+    // permission CTA and the approve CTA MUTUALLY EXCLUSIVELY.
+    // The lookup is fail-closed (`false`) when the repository
+    // is not wired or when the durable row is absent. The
+    // server is the single source of truth for the
+    // authorization state — the web never infers it from
+    // approval history alone.
+    const actingSideHasDealApprover = await this.resolveActingSideHasDealApprover(
+      input.userAccountId,
+      input.actingWorkspaceId,
+    );
     return {
       deal: publicDeal,
       currentTermsVersion: view.value.currentTermsVersion
@@ -357,7 +390,36 @@ export class DealTermsService {
       currentApprovals: view.value.currentApprovals.map(toPublicApproval),
       projectRequest,
       sellerConsent,
+      actingSideHasDealApprover,
     };
+  }
+
+  /**
+   * M2 (#88) Codex finding: look up the durable
+   * `(workspaceId, userId)` row in `deal_approvers`. Returns
+   * `false` when the repository is not wired OR the row is
+   * absent OR the lookup fails. The web uses this signal to
+   * render the permission CTA and the approve CTA MUTUALLY
+   * EXCLUSIVELY.
+   */
+  private async resolveActingSideHasDealApprover(
+    userAccountId: string,
+    actingWorkspaceId: string,
+  ): Promise<boolean> {
+    if (this.dealApproverRepository === null) return false;
+    try {
+      const row = await this.dealApproverRepository.findDealApprover({
+        workspaceId: actingWorkspaceId,
+        userId: userAccountId,
+      });
+      return row !== null;
+    } catch {
+      // Fail-closed: an unexpected repository error must NOT
+      // silently flip the predicate to true. The Deal view
+      // collapses to a 5xx at the route layer so operators
+      // can diagnose.
+      return false;
+    }
   }
 
   /**

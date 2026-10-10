@@ -93,7 +93,15 @@ function withTransactionFailureProxy(underlying: PrismaClient, failCount: number
 }
 
 test("bounded P2034 retry success: the helper retries on P2034 and succeeds on the next attempt", async () => {
-  // Reset the BG4 rows so the test starts clean.
+  // Reset the BG4 rows so the test starts clean. M2 (#88) initial
+  // TermsVersion rows hold a RESTRICT FK to deals; remove them
+  // first.
+  await prisma.dealApproval.deleteMany({
+    where: { termsVersion: { deal: { projectBriefId: fixture.brief.id } } },
+  });
+  await prisma.termsVersion.deleteMany({
+    where: { deal: { projectBriefId: fixture.brief.id } },
+  });
   await prisma.deal.deleteMany({ where: { projectBriefId: fixture.brief.id } });
   await prisma.projectRequest.deleteMany({ where: { projectBriefId: fixture.brief.id } });
 
@@ -120,8 +128,135 @@ test("bounded P2034 retry success: the helper retries on P2034 and succeeds on t
   assert.equal(count, 1);
 });
 
+test("bounded P2034 retry memoizes the AI draft thunk across retries (one adapter call per accept)", async () => {
+  // M2 (#88) Codex finding (post 8d1ac3b): the AI draft thunk
+  // is invoked inside the transaction, AFTER the guarded
+  // transition. A mid-transaction P2034 (e.g., the
+  // serialization_failure on the TermsVersion insert) could
+  // otherwise cause the next retry attempt to invoke the
+  // adapter a second time for the same logical accept. The
+  // repository memoizes the producer so a successful accept
+  // hits the adapter exactly once across ALL retry attempts.
+  await prisma.dealApproval.deleteMany({
+    where: { termsVersion: { deal: { projectBriefId: fixture.brief.id } } },
+  });
+  await prisma.termsVersion.deleteMany({
+    where: { deal: { projectBriefId: fixture.brief.id } },
+  });
+  await prisma.deal.deleteMany({ where: { projectBriefId: fixture.brief.id } });
+  await prisma.projectRequest.deleteMany({ where: { projectBriefId: fixture.brief.id } });
+
+  const proxy = withTransactionFailureProxy(prisma, 1);
+  const wrappedRepo = new PrismaProjectRequestRepository(proxy);
+
+  let aiCalls = 0;
+  const producer: () => Promise<{
+    scope: string;
+    deliverables: ReadonlyArray<{ title: string; description: string }>;
+    schedule: { startDate: string; endDate: string; deliveryDays: number };
+    price: { amountMinor: number; currency: "USD" };
+    revisionAllowance: number;
+    rightsSummary: string;
+    fundingDeadlineAt?: string;
+    aiProvider: "managed" | "deterministic-fallback";
+    aiModelId: string | null;
+    aiFallbackUsed: boolean;
+  }> = () => {
+    aiCalls += 1;
+    return Promise.resolve({
+      scope: "Memoized draft.",
+      deliverables: [{ title: "Test", description: "Test deliverable." }],
+      schedule: { startDate: "2026-01-01", endDate: "2026-01-22", deliveryDays: 21 },
+      price: { amountMinor: 75000, currency: "USD" },
+      revisionAllowance: 1,
+      rightsSummary: "Test rights.",
+      aiProvider: "deterministic-fallback",
+      aiModelId: null,
+      aiFallbackUsed: true,
+    });
+  };
+
+  // First use case attempt fails (P2034). The retry attempt
+  // must REUSE the cached draft, not re-invoke the producer.
+  const useCase = (
+    ctx: {
+      sellerAuthority: {
+        userAccountId: string;
+        actingWorkspaceId: string;
+        projectRequestSellerWorkspaceId: string;
+        workspaceStatus: "Active" | "Suspended";
+        isMember: boolean;
+        hasSellerCapability: boolean;
+      };
+      projectRequest: { id: string };
+      produceInitialTermsVersionDraft: (() => Promise<unknown>) | null;
+    },
+    tools: {
+      reject: (_reason: string) => { kind: "reject" };
+      accept: (input: unknown) => { kind: "accept"; input: unknown };
+      decline: (input: unknown) => { kind: "decline"; input: unknown };
+    },
+  ): { kind: "reject" | "accept" | "decline" } => {
+    // Use the produceInitialTermsVersionDraft the repository
+    // memoized; this counts every invocation across retries.
+    return tools.accept({
+      projectRequestId: ctx.projectRequest.id,
+      sellerDecisionByUserId: ctx.sellerAuthority.userAccountId,
+      now: new Date("2026-09-01T00:00:00Z"),
+      produceInitialTermsVersionDraft: async () => {
+        // Call the memoized producer through the use case
+        // context. The repository wraps the input producer in
+        // a memoizing closure so the adapter runs at most
+        // once across retry attempts.
+        if (ctx.produceInitialTermsVersionDraft === null) {
+          throw new Error("expected producer");
+        }
+        return ctx.produceInitialTermsVersionDraft();
+      },
+    });
+  };
+
+  // Create a Pending ProjectRequest first (no P2034 yet).
+  await wrappedRepo.createProjectRequestInTransaction(
+    {
+      buyerWorkspaceId: fixture.buyerWorkspace.id,
+      projectBriefId: fixture.brief.id,
+      serviceOfferingId: fixture.offering.id,
+      userAccountId: fixture.buyerUser.id,
+    },
+    buyerOkUseCase,
+  );
+  const requestRow = await prisma.projectRequest.findFirstOrThrow({
+    where: { projectBriefId: fixture.brief.id },
+  });
+
+  // Accept: the proxy forces P2034 on the FIRST attempt; the
+  // second attempt succeeds. The producer must be invoked
+  // exactly once.
+  const result = await wrappedRepo.respondToProjectRequestInTransaction(
+    {
+      projectRequestId: requestRow.id,
+      actingWorkspaceId: fixture.sellerWorkspace.id,
+      userAccountId: fixture.sellerUser.id,
+      now: new Date("2026-09-01T00:00:00Z"),
+      produceInitialTermsVersionDraft: producer,
+    },
+    useCase as never,
+  );
+  assert.equal(result.ok, true);
+  assert.equal(aiCalls, 1, "AI adapter must be invoked exactly once across all retry attempts");
+});
+
 test("bounded P2034 retry exhaustion: after the budget the helper returns CONCURRENCY_RETRY_EXHAUSTED with no partial state", async () => {
-  // Reset the BG4 rows so the test starts clean.
+  // Reset the BG4 rows so the test starts clean. M2 (#88) initial
+  // TermsVersion rows hold a RESTRICT FK to deals; remove them
+  // first.
+  await prisma.dealApproval.deleteMany({
+    where: { termsVersion: { deal: { projectBriefId: fixture.brief.id } } },
+  });
+  await prisma.termsVersion.deleteMany({
+    where: { deal: { projectBriefId: fixture.brief.id } },
+  });
   await prisma.deal.deleteMany({ where: { projectBriefId: fixture.brief.id } });
   await prisma.projectRequest.deleteMany({ where: { projectBriefId: fixture.brief.id } });
 

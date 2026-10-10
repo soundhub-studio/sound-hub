@@ -44,6 +44,65 @@ import type {
   SellerEligibilitySnapshot,
 } from "./project-request-authorization-policy.js";
 
+// ---------- M2 (#88) — initial TermsVersion draft ----------
+//
+// The seller-accept command atomically creates exactly one
+// Negotiating Deal AND exactly one AI-drafted, unapproved current
+// TermsVersion (ticket #88 acceptance criterion: "Seller acceptance
+// atomically and retry-safely creates exactly one Negotiating Deal
+// and AI-drafted, unapproved current TermsVersion"). The application
+// layer is responsible for generating the AI proposal; the
+// repository is responsible for FOR UPDATE-locking the Deal + the
+// `(dealId, version)` uniqueness and persisting the row inside the
+// same transaction that creates the Deal. A retry that re-enters
+// the same accept payload converges on the same TermsVersion row
+// because the (dealId, version) UNIQUE index rejects duplicates.
+//
+// The shape mirrors `PersistDraftTermsInput["proposedTerms"]` in
+// `apps/api/src/deal-terms/deal-terms.repository.ts`. We deliberately
+// do NOT import the DealTerms contract here so the ProjectRequest
+// repository seam stays a single-file module — the application layer
+// constructs the validated proposal before opening the transaction.
+export interface InitialTermsVersionDraft {
+  readonly scope: string;
+  readonly deliverables: ReadonlyArray<{
+    readonly title: string;
+    readonly description: string;
+  }>;
+  readonly schedule: {
+    readonly startDate: string;
+    readonly endDate: string;
+    readonly deliveryDays: number;
+  };
+  readonly price: { readonly amountMinor: number; readonly currency: "USD" };
+  readonly revisionAllowance: number;
+  readonly rightsSummary: string;
+  readonly fundingDeadlineAt?: string;
+  readonly aiProvider: "managed" | "deterministic-fallback";
+  readonly aiModelId: string | null;
+  readonly aiFallbackUsed: boolean;
+}
+
+export interface PersistedTermsVersion {
+  readonly id: string;
+  readonly dealId: string;
+  readonly version: number;
+  readonly scope: string;
+  readonly deliverablesJson: unknown;
+  readonly scheduleJson: unknown;
+  readonly priceAmountMinor: number;
+  readonly priceCurrency: string;
+  readonly revisionAllowance: number;
+  readonly rightsSummary: string;
+  readonly fundingDeadlineAt: Date | null;
+  readonly aiProvider: string;
+  readonly aiModelId: string | null;
+  readonly aiFallbackUsed: boolean;
+  readonly draftedByUserId: string | null;
+  readonly draftedAt: Date;
+  readonly createdAt: Date;
+}
+
 export interface PersistedProjectRequest {
   readonly id: string;
   readonly buyerWorkspaceId: string;
@@ -93,6 +152,20 @@ export interface PersistAcceptProjectRequestInput {
   readonly projectRequestId: string;
   readonly sellerDecisionByUserId: string;
   readonly now: Date;
+  /**
+   * M2 (#88) Codex finding: the AI draft is a LAZY thunk. The
+   * use-case closure returns a `produceInitialTermsVersionDraft`
+   * thunk; the repository invokes it INSIDE the transaction
+   * AFTER the guarded Pending → Accepted update succeeds
+   * and BEFORE the TermsVersion insert. The adapter is therefore
+   * never invoked for unauthorized / already-responded /
+   * losing-concurrent attempts, and concurrent accepts share the
+   * same retry-safe adapter call only on the winning path. The
+   * repository persists the row with monotonic version 1; the
+   * `(dealId, version)` UNIQUE index is the durable convergence
+   * key for same-attempt retry.
+   */
+  readonly produceInitialTermsVersionDraft: () => Promise<InitialTermsVersionDraft>;
 }
 
 export interface PersistDeclineProjectRequestInput {
@@ -158,6 +231,20 @@ export interface CreateProjectRequestTransactionInput {
 export interface RespondProjectRequestUseCaseContext {
   readonly sellerAuthority: SellerAuthoritySnapshot;
   readonly projectRequest: PersistedProjectRequest;
+  /**
+   * M2 (#88) Codex finding: the AI candidate MUST be produced
+   * INSIDE the use-case closure, AFTER the seller-authority
+   * snapshot is evaluated. The repository injects a deferred
+   * draft producer; the use case calls it only when the
+   * accept verdict is taken. This ensures the AI adapter is
+   * invoked exactly once on a successful accept and never on
+   * unauthorized / already-responded / losing-concurrent
+   * attempts.
+   *
+   * The producer is `null` when the use case is for tests
+   * that bypass the AI boundary.
+   */
+  readonly produceInitialTermsVersionDraft: (() => Promise<InitialTermsVersionDraft>) | null;
 }
 
 export interface RespondProjectRequestUseCaseTools {
@@ -181,11 +268,29 @@ export interface RespondProjectRequestTransactionInput {
   readonly actingWorkspaceId: string;
   readonly userAccountId: string;
   readonly now: Date;
+  /**
+   * M2 (#88) Codex finding: the AI draft producer is threaded
+   * into the use-case context so the adapter is invoked ONLY
+   * when the use case decides to accept. The repository passes
+   * it through to the use case closure. The producer is
+   * optional; tests that exercise the BG4 repository
+   * contracts without going through the service may pass
+   * `null` (or omit it entirely) and the use case closure is
+   * responsible for any fallback path.
+   */
+  readonly produceInitialTermsVersionDraft?: (() => Promise<InitialTermsVersionDraft>) | null;
 }
 
 export interface AcceptProjectRequestResult {
   readonly projectRequest: PersistedProjectRequest;
   readonly deal: PersistedDeal;
+  /**
+   * M2 (#88): the AI-drafted, unapproved current TermsVersion the
+   * accept transaction persisted atomically alongside the Deal. The
+   * row is unapproved by construction — accepting a ProjectRequest
+   * is NOT TermsVersion approval (ticket #88 acceptance criterion).
+   */
+  readonly initialTermsVersion: PersistedTermsVersion;
 }
 
 // ---------- interface ----------

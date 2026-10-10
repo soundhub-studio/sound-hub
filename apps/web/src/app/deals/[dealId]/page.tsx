@@ -66,9 +66,18 @@ interface DealPageProps {
   // Next.js 15's `PageProps.params` is a Promise; await it in the
   // client component to keep the route type-compatible.
   readonly params: Promise<{ readonly dealId: string }>;
+  // M2 (#88) Codex finding (post 8d1ac3b): the
+  // /deals/[id]/approve-permission success redirect appends
+  // ?actingWorkspaceId= to the destination URL. The Deal
+  // page consumes this query param on mount so the human
+  // returns to the same acting Workspace they were just
+  // authorized against (no manual re-selection).
+  readonly searchParams: Promise<{
+    readonly [key: string]: string | string[] | undefined;
+  }>;
 }
 
-export default function DealPage({ params }: DealPageProps): JSX.Element {
+export default function DealPage({ params, searchParams }: DealPageProps): JSX.Element {
   const [resolvedDealId, setResolvedDealId] = useState<string>("");
   useEffect(() => {
     let cancelled = false;
@@ -79,6 +88,26 @@ export default function DealPage({ params }: DealPageProps): JSX.Element {
       cancelled = true;
     };
   }, [params]);
+  // M2 (#88) Codex finding (post 8d1ac3b): the
+  // /deals/[id]/approve-permission success redirect appends
+  // ?actingWorkspaceId= to the destination URL. The Deal page
+  // reads this on mount so the human returns to the same
+  // acting Workspace they were just authorized against.
+  const [preferredActingWorkspaceId, setPreferredActingWorkspaceId] = useState<string>("");
+  useEffect(() => {
+    let cancelled = false;
+    void searchParams.then((p) => {
+      if (cancelled) return;
+      const raw = p.actingWorkspaceId;
+      const value = Array.isArray(raw) ? raw[0] : raw;
+      if (typeof value === "string" && value.length > 0 && value.length <= 128) {
+        setPreferredActingWorkspaceId(value);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [searchParams]);
   const dealId = resolvedDealId;
   const { user, loading, refresh } = useSession();
   const [actingWorkspaceId, setActingWorkspaceId] = useState<string>("");
@@ -87,6 +116,13 @@ export default function DealPage({ params }: DealPageProps): JSX.Element {
     null,
   );
   const [currentApprovals, setCurrentApprovals] = useState<readonly Bg5DealApprovalPublicV1[]>([]);
+  // M2 (#88) Codex finding: derived from the durable
+  // `(workspaceId, userId)` `deal_approvers` row. The page
+  // uses this signal to render the permission CTA and the
+  // approve CTA MUTUALLY EXCLUSIVELY (only ONE may show at a
+  // time). False when the row is absent OR when the lookup
+  // failed (fail-closed).
+  const [actingSideHasDealApprover, setActingSideHasDealApprover] = useState<boolean>(false);
   const [sellerConsent, setSellerConsent] = useState<Bg5SellerConsentProjectionV1 | null>(null);
   const [loadingDeal, setLoadingDeal] = useState<boolean>(false);
   const [bootstrapComplete, setBootstrapComplete] = useState<boolean>(false);
@@ -111,6 +147,7 @@ export default function DealPage({ params }: DealPageProps): JSX.Element {
         setCurrentTermsVersion(null);
         setCurrentApprovals([]);
         setSellerConsent(null);
+        setActingSideHasDealApprover(false);
         return;
       }
       setLoadingDeal(true);
@@ -121,6 +158,7 @@ export default function DealPage({ params }: DealPageProps): JSX.Element {
         setCurrentTermsVersion(result.deal.currentTermsVersion);
         setCurrentApprovals(result.deal.currentApprovals);
         setSellerConsent(result.deal.sellerConsent);
+        setActingSideHasDealApprover(result.deal.actingSideHasDealApprover);
       } catch (err) {
         if (
           err instanceof Error &&
@@ -145,6 +183,7 @@ export default function DealPage({ params }: DealPageProps): JSX.Element {
       setCurrentTermsVersion(null);
       setCurrentApprovals([]);
       setSellerConsent(null);
+      setActingSideHasDealApprover(false);
       return;
     }
     if (
@@ -173,6 +212,8 @@ export default function DealPage({ params }: DealPageProps): JSX.Element {
       dealId,
       workspaceIds: user.workspaces.map((workspace) => workspace.workspaceId),
       fetchDeal,
+      preferredActingWorkspaceId:
+        preferredActingWorkspaceId !== "" ? preferredActingWorkspaceId : undefined,
     })
       .then((result) => {
         if (cancelled) return;
@@ -181,6 +222,7 @@ export default function DealPage({ params }: DealPageProps): JSX.Element {
         setCurrentTermsVersion(result.response.deal.currentTermsVersion);
         setCurrentApprovals(result.response.deal.currentApprovals);
         setSellerConsent(result.response.deal.sellerConsent);
+        setActingSideHasDealApprover(result.response.deal.actingSideHasDealApprover);
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -362,11 +404,23 @@ export default function DealPage({ params }: DealPageProps): JSX.Element {
   const alreadyApproved =
     currentTermsVersion !== null &&
     currentApprovals.some((a) => a.workspaceId === actingWorkspaceId);
-  const showApprove =
+  // M2 (#88) Codex finding: the permission CTA and the
+  // approve CTA are MUTUALLY EXCLUSIVE. The permission CTA
+  // shows only when the acting human lacks an explicit
+  // `DealApprover` authorization; the approve CTA shows only
+  // when they have one. The signal is the durable
+  // `(workspaceId, userId)` `deal_approvers` row, NOT the
+  // approval history. A side that has never approved may
+  // still hold a DealApprover (e.g. provisioned via the
+  // dashboard readiness task) — only the durable row
+  // proves it.
+  const hasCapabilityForDecision =
     capabilityRequired !== null &&
     currentTermsVersion !== null &&
-    !alreadyApproved &&
-    currentTermsVersion.isCurrentVersion;
+    currentTermsVersion.isCurrentVersion &&
+    !alreadyApproved;
+  const showApprove = hasCapabilityForDecision && actingSideHasDealApprover;
+  const showPermissionCta = hasCapabilityForDecision && !actingSideHasDealApprover;
   const dealSummaryCopy = buildDealSummaryCopy(deal.status);
 
   // BG6 funding state. The FundingCard renders a single allow-listed
@@ -572,6 +626,23 @@ export default function DealPage({ params }: DealPageProps): JSX.Element {
               onApprove={() => {
                 void onApprove();
               }}
+              onPermissionCta={
+                showPermissionCta
+                  ? () => {
+                      // M2 (#88) Codex finding: thread the acting
+                      // Workspace through the URL so the
+                      // destination page can revalidate the
+                      // exact selection against the Deal view
+                      // (the human must be a current member AND
+                      // a party to this Deal) instead of
+                      // silently choosing the first Workspace
+                      // that can read the Deal.
+                      window.location.assign(
+                        `/deals/${deal.dealId}/approve-permission?actingWorkspaceId=${encodeURIComponent(actingWorkspaceId)}`,
+                      );
+                    }
+                  : null
+              }
               submitting={submitting}
               showDraftButton={shouldShowDraftTermsControl(
                 deal.status,
@@ -612,6 +683,7 @@ function TermsVersionView({
   sellerWorkspaceId,
   onDraft,
   onApprove,
+  onPermissionCta,
   submitting,
   showDraftButton,
   showApproveButton,
@@ -622,6 +694,11 @@ function TermsVersionView({
   readonly sellerWorkspaceId: string;
   readonly onDraft: () => void;
   readonly onApprove: () => void;
+  // M2 (#88): the aubergine "Permission to approve terms" CTA
+  // routes the human to the JIT setup page when set. Null hides
+  // the CTA (the human is on a different side, already
+  // approved, or the page is read-only).
+  readonly onPermissionCta: (() => void) | null;
   readonly submitting: "draft" | "approve" | "fund" | null;
   readonly showDraftButton: boolean;
   readonly showApproveButton: boolean;
@@ -708,6 +785,19 @@ function TermsVersionView({
         </ul>
       </div>
       <div className="flex flex-wrap gap-2">
+        {onPermissionCta && (
+          <button
+            type="button"
+            onClick={() => {
+              onPermissionCta();
+            }}
+            disabled={submitting !== null}
+            className="inline-flex items-center justify-center min-h-[44px] py-2 px-4 text-sm font-medium text-white bg-aubergine hover:bg-aubergine-hover rounded focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-aubergine disabled:opacity-50"
+            data-testid="deal-permission-cta"
+          >
+            Permission to approve terms
+          </button>
+        )}
         {showDraftButton && (
           <button
             type="button"
@@ -728,7 +818,7 @@ function TermsVersionView({
               void onApprove();
             }}
             disabled={submitting !== null}
-            className="bg-green-600 text-white px-3 py-1.5 rounded-md text-sm font-medium hover:bg-green-700 disabled:opacity-50 transition-colors"
+            className="inline-flex items-center justify-center min-h-[44px] py-2 px-4 text-sm font-medium text-white bg-aubergine hover:bg-aubergine-hover rounded focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-aubergine disabled:opacity-50"
             data-testid="deal-approve-button"
           >
             {submitting === "approve" ? "Approving…" : "Approve this TermsVersion"}
